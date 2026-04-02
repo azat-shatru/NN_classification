@@ -1,0 +1,51 @@
+# Claude Code local settings
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data files — exclude large raw data
+*.csv
+*.xls
+*.xlsx
+!NN_Design_Tracker.xlsx
+
+# Credentials / secrets
+credentials.json
+token.json
+*.pem
+*.key
+service_account*.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Streamlit cache
+.streamlit/
+
+# Zip archives
+*.zip
+
+# Temp / output
+*.log
+*.tmp

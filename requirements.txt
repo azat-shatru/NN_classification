@@ -1,0 +1,17 @@
+streamlit
+pandas
+numpy
+matplotlib
+seaborn
+plotly
+scikit-learn
+torch
+shap
+pdfplumber
+python-docx
+openpyxl
+missingno
+factor_analyzer
+streamlit-sortables
+reportlab
+scipy
