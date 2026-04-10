@@ -180,3 +180,75 @@ body {
 ::-webkit-scrollbar-track { background: #f1f1f1; }
 ::-webkit-scrollbar-thumb { background: #c1c8d9; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #8b9ab1; }
+
+/* ── Variable Mapping — question code badge ───────────────────────────── */
+.vm-q-code {
+    display: inline-block;
+    background: #1e2130;
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 0.78rem;
+    font-family: monospace;
+    border-radius: 4px;
+    padding: 2px 8px;
+    white-space: nowrap;
+    min-width: 48px;
+    text-align: center;
+}
+
+.vm-q-code-unmatched {
+    background: #6b7280;
+}
+
+.vm-q-text {
+    font-size: 0.85rem;
+    color: #374151;
+    font-weight: 500;
+    flex: 1;
+}
+
+/* ── Variable Mapping — accordion overrides ───────────────────────────── */
+.vm-accordion .accordion-button {
+    padding: 10px 14px;
+    background: #f8f9fa;
+    font-size: 0.85rem;
+}
+
+.vm-accordion .accordion-button:not(.collapsed) {
+    background: #eef2ff;
+    box-shadow: none;
+    border-bottom: 1px solid #c7d2fe;
+}
+
+.vm-accordion .accordion-item {
+    margin-bottom: 6px;
+    border-radius: 8px !important;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+}
+
+.vm-accordion .accordion-body {
+    padding: 10px 14px;
+    background: #fafafa;
+}
+
+/* ── Variable Mapping — tile hover ───────────────────────────────────────*/
+.vm-tile-name:hover {
+    text-decoration: underline dotted;
+    color: #3a6df0;
+}
+
+/* ── Sidebar toggle button ────────────────────────────────────────────── */
+#sidebar-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    transition: background 0.15s;
+}
+
+#sidebar-toggle-btn:hover {
+    background: #2d3448 !important;
+}

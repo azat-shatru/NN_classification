@@ -94,7 +94,7 @@ def layout(state: dict) -> html.Div:
                 children=html.Div([
                     html.I(className="bi bi-cloud-upload me-2"),
                     "Drag & drop or ",
-                    html.A("click to select", style={"color": "#3a6df0"}),
+                    html.Span("click to select", style={"color": "#3a6df0", "textDecoration": "underline", "cursor": "pointer"}),
                 ]),
                 accept=".csv,.xlsx,.xls",
                 className="upload-area",

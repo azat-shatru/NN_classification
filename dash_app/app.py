@@ -12,6 +12,7 @@ if _HERE not in sys.path:
 import dash
 from dash import Dash, dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
+from dash.exceptions import PreventUpdate
 
 # Import all page modules — this registers their callbacks
 from pages import (
@@ -127,10 +128,33 @@ def _sidebar_nav(state: dict, pathname: str) -> list:
 def _sidebar():
     return html.Div(
         [
-            html.H4([html.I(className="bi bi-cpu me-2"), "NN Pipeline"]),
-            html.Div("Multiclass Classification · PyTorch", className="sidebar-caption"),
-            html.Hr(style={"borderColor": "#2d3448", "margin": "12px 0"}),
-            html.Div(id="sidebar-nav"),
+            # Always-visible toggle button
+            html.Div(
+                dbc.Button(
+                    html.I(className="bi bi-list", style={"fontSize": "1.25rem"}),
+                    id="sidebar-toggle-btn",
+                    color="link",
+                    n_clicks=0,
+                    style={
+                        "color": "#c9d1e0",
+                        "padding": "4px 6px",
+                        "minWidth": "auto",
+                        "lineHeight": "1",
+                    },
+                    title="Toggle sidebar",
+                ),
+                style={"marginBottom": "6px"},
+            ),
+            # Collapsible content
+            html.Div(
+                [
+                    html.H4([html.I(className="bi bi-cpu me-2"), "NN Pipeline"]),
+                    html.Div("Multiclass Classification · PyTorch", className="sidebar-caption"),
+                    html.Hr(style={"borderColor": "#2d3448", "margin": "12px 0"}),
+                    html.Div(id="sidebar-nav"),
+                ],
+                id="sidebar-inner",
+            ),
         ],
         id="sidebar",
         style={
@@ -144,6 +168,7 @@ def _sidebar():
             "left": 0,
             "overflowY": "auto",
             "zIndex": 1000,
+            "transition": "width 0.2s ease, min-width 0.2s ease",
         },
     )
 
@@ -153,6 +178,7 @@ app.layout = html.Div(
     [
         dcc.Location(id="url", refresh=False),
         dcc.Store(id="app-state", storage_type="session", data=DEFAULT_STATE),
+        dcc.Store(id="sidebar-collapsed", data=False, storage_type="session"),
         _sidebar(),
         html.Div(
             dcc.Loading(
@@ -160,11 +186,13 @@ app.layout = html.Div(
                 type="circle",
                 color="#3a6df0",
             ),
+            id="main-wrapper",
             style={
                 "marginLeft": "220px",
                 "padding": "28px 32px",
                 "minHeight": "100vh",
                 "backgroundColor": "#f8f9fa",
+                "transition": "margin-left 0.2s ease",
             },
         ),
     ]
@@ -212,6 +240,54 @@ def update_sidebar(state, pathname):
     return _sidebar_nav(state, pathname)
 
 
+# ── Sidebar collapse ──────────────────────────────────────────────────────────
+
+@callback(
+    Output("sidebar-collapsed", "data"),
+    Input("sidebar-toggle-btn", "n_clicks"),
+    State("sidebar-collapsed", "data"),
+    prevent_initial_call=True,
+)
+def toggle_sidebar(n, collapsed):
+    return not collapsed
+
+
+@callback(
+    Output("sidebar", "style"),
+    Output("sidebar-inner", "style"),
+    Output("main-wrapper", "style"),
+    Input("sidebar-collapsed", "data"),
+)
+def apply_sidebar_state(collapsed):
+    _sidebar_base = {
+        "backgroundColor": "#1e2130",
+        "minHeight": "100vh",
+        "position": "fixed",
+        "top": 0,
+        "left": 0,
+        "overflowY": "auto",
+        "zIndex": 1000,
+        "transition": "width 0.2s ease, min-width 0.2s ease",
+    }
+    _content_base = {
+        "minHeight": "100vh",
+        "backgroundColor": "#f8f9fa",
+        "transition": "margin-left 0.2s ease",
+        "padding": "28px 32px",
+    }
+    if collapsed:
+        return (
+            {**_sidebar_base, "width": "48px", "minWidth": "48px", "padding": "12px 8px"},
+            {"display": "none"},
+            {**_content_base, "marginLeft": "48px"},
+        )
+    return (
+        {**_sidebar_base, "width": "220px", "minWidth": "220px", "padding": "20px 12px"},
+        {},
+        {**_content_base, "marginLeft": "220px"},
+    )
+
+
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(debug=True, port=8050)
+    app.run(debug=False, port=8050)
