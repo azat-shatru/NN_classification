@@ -6,18 +6,19 @@ wb = openpyxl.load_workbook('NN_Design_Tracker.xlsx')
 ws = wb['Session Log']
 
 next_row = ws.max_row + 1
-next_session = 16
+next_session = 17
 
 decision_text = (
-    "Session 2026-04-10 (continued) — Variable Mapping further improvements: "
-    "(1) Answer options moved from card-level panel into each individual variable tile — "
-    "each tile now shows its question's options as indigo pill chips (max 6 visible + '+N more'). "
-    "Scale questions show '1 = low → N = high' anchor text instead. "
-    "(2) qnr_parser.py _parse_docx rewritten to read docx in true document order (paragraphs and tables interleaved). "
-    "Previously all paragraphs were read first then all tables, breaking the question→options link when options "
-    "live in Word tables. Fix uses doc.element.body iteration with qn('w:p') / qn('w:tbl') tags. "
-    "Handles three table layouts: single-cell rows (one option per row), two-cell value|label rows "
-    "(formats as '1. Label'), and multi-cell rows (joined with ' | '). Merged cells deduplicated by element identity."
+    "Session 2026-04-10 — Var Mapping: interactive option assignment per variable tile. "
+    "Replaced static read-only answer-option chips on each variable tile with an interactive "
+    "multi-select dropdown. Each tile now shows an 'Assigned options' dropdown populated with "
+    "the parent question's answer options from the QNR; user can select one or more options to "
+    "indicate which answer options that variable represents. Selections stored in "
+    "vm_state['option_assignments'] (dict: col -> list of selected option strings) and persist "
+    "within the session. Reset all clears assignments along with other vm_state fields. "
+    "Callback: handle_option_assign uses pattern-matching Input({'type': 'vm-opt-sel', 'index': ALL}). "
+    "DEFAULT_VM_STATE updated to include 'option_assignments': {}. "
+    "Committed as 4f8dea8 and pushed to origin/dash-app."
 )
 
 open_questions = (
@@ -43,8 +44,8 @@ def copy_row_style(src_row_num, dst_row_num):
 copy_row_style(ws.max_row, next_row)
 
 ws.cell(row=next_row, column=1).value = next_session
-ws.cell(row=next_row, column=2).value = '2026-04-10'
-ws.cell(row=next_row, column=3).value = 'Var Mapping: inline options per tile + qnr_parser docx table-order fix'
+ws.cell(row=next_row, column=2).value = '2026-04-10'  # session 17
+ws.cell(row=next_row, column=3).value = 'Var Mapping: interactive multi-select option assignment per variable tile'
 ws.cell(row=next_row, column=4).value = decision_text
 ws.cell(row=next_row, column=5).value = open_questions
 

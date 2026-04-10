@@ -62,8 +62,8 @@ NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 17
 - Scale questions show `Scale: 1 = "low" → N = "high"` instead of chips
 - `qnr_parser._parse_docx` reads docx in document order (paragraphs + tables interleaved) to preserve question→options linkage; handles single-cell, value|label, and multi-cell table rows
 
-## Current state (last updated 2026-04-10, session 16)
-- Variable Mapping page: accordion tiles with inline options per tile, hover preview, delete/move/reassign
+## Current state (last updated 2026-04-10, session 17)
+- Variable Mapping page: accordion tiles, hover preview, delete/move/reassign, interactive multi-select option assignment per tile
 - qnr_parser: fixed docx parsing to read in document order (options in tables now correctly linked to questions)
 - Stage 0: upload fix (html.A → html.Span), column editor drop fix
 - Sidebar collapse toggle implemented
