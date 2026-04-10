@@ -109,20 +109,70 @@ def _detect_type(question_text: str, pn_text: str, options: list) -> dict:
 # ── docx parser ───────────────────────────────────────────────────────────────
 
 def _parse_docx(path: Path) -> list[str]:
+    """
+    Parse docx in true document order — paragraphs and tables interleaved.
+    This preserves the question → options relationship when options live in tables.
+
+    Table handling:
+      - Single-cell rows  → one option per line  ("Strongly disagree")
+      - Two-cell rows     → value|label pair      ("1" + "Strongly disagree" → "1. Strongly disagree")
+      - Multi-cell rows   → join with " | "
+    Merged cells are deduplicated via element identity.
+    """
     import docx
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph as _Para
+    from docx.table import Table as _Table
+
     doc = docx.Document(str(path))
     lines = []
-    for para in doc.paragraphs:
-        t = para.text.strip()
-        if t:
-            lines.append(t)
-    # Also check tables
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                t = cell.text.strip()
-                if t:
-                    lines.append(t)
+
+    for child in doc.element.body:
+        tag = child.tag
+
+        # ── paragraph ─────────────────────────────────────────────────────────
+        if tag == qn("w:p"):
+            t = _Para(child, doc).text.strip()
+            if t:
+                lines.append(t)
+
+        # ── table ─────────────────────────────────────────────────────────────
+        elif tag == qn("w:tbl"):
+            tbl = _Table(child, doc)
+            seen_tc = set()          # deduplicate merged cells by element identity
+
+            for row in tbl.rows:
+                cell_texts = []
+                for cell in row.cells:
+                    tc = cell._tc
+                    if id(tc) in seen_tc:
+                        continue
+                    seen_tc.add(id(tc))
+                    ct = cell.text.strip()
+                    if ct:
+                        cell_texts.append(ct)
+
+                if not cell_texts:
+                    continue
+
+                if len(cell_texts) == 1:
+                    # Single column → each row is one option
+                    lines.append(cell_texts[0])
+
+                elif len(cell_texts) == 2:
+                    # Two columns — common pattern: value | label
+                    val, label = cell_texts
+                    if re.match(r"^\d+\.?$", val):
+                        # "1" + "Strongly disagree" → "1. Strongly disagree"
+                        sep = "" if val.endswith(".") else "."
+                        lines.append(f"{val}{sep} {label}")
+                    else:
+                        lines.append(f"{val} | {label}")
+
+                else:
+                    # Multi-column: join non-empty cells
+                    lines.append(" | ".join(cell_texts))
+
     return lines
 
 

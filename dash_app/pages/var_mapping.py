@@ -144,18 +144,19 @@ def _render_tile(
     col: str,
     df: pd.DataFrame,
     options_str: str,
+    scale_str: str,
     current_type: str,
     current_q_code: str,
     all_q_codes: list,
     is_possibly_related: bool = False,
     is_extra: bool = False,
 ) -> html.Div:
-    """Render one variable tile."""
+    """Render one variable tile with inline options."""
     tid = _safe_id(col)
 
-    # First 10 non-null values
+    # First 10 non-null values for tooltip
     if col in df.columns:
-        vals = df[col].dropna().head(10).tolist()
+        vals     = df[col].dropna().head(10).tolist()
         vals_str = ", ".join(str(v) for v in vals)
         nunique  = int(df[col].nunique())
         n_miss   = int(df[col].isnull().sum())
@@ -167,52 +168,81 @@ def _render_tile(
     tooltip_body = [
         html.Strong(col, style={"fontSize": "0.88rem"}),
         html.Hr(style={"margin": "4px 0", "borderColor": "#4b5563"}),
-        html.Div(
-            [html.Span("First 10 values: ", style={"color": "#9ca3af"}), vals_str],
-            style={"fontSize": "0.78rem", "wordBreak": "break-all"},
-        ),
-        html.Div(
-            [html.Span("Unique / Missing: ", style={"color": "#9ca3af"}),
-             f"{nunique} / {n_miss}"],
-            style={"fontSize": "0.78rem"},
-        ),
+        html.Div([html.Span("First 10 values: ", style={"color": "#9ca3af"}), vals_str],
+                 style={"fontSize": "0.78rem", "wordBreak": "break-all"}),
+        html.Div([html.Span("Unique / Missing: ", style={"color": "#9ca3af"}),
+                  f"{nunique} / {n_miss}"],
+                 style={"fontSize": "0.78rem"}),
     ]
-    if options_str:
-        tooltip_body += [
-            html.Hr(style={"margin": "4px 0", "borderColor": "#4b5563"}),
-            html.Div(
-                [html.Span("Options: ", style={"color": "#9ca3af"}), options_str],
-                style={"fontSize": "0.78rem", "whiteSpace": "normal", "maxWidth": "320px"},
-            ),
-        ]
 
-    # Tile border colour
+    # ── Inline options row ────────────────────────────────────────────────────
+    options_row = None
+
+    if options_str:
+        opts = [o.strip() for o in options_str.split(" | ") if o.strip()]
+        MAX_SHOW = 6
+        shown    = opts[:MAX_SHOW]
+        leftover = len(opts) - MAX_SHOW
+
+        chips = [
+            html.Span(
+                o,
+                style={
+                    "display": "inline-block",
+                    "background": "#e0e7ff",
+                    "border": "1px solid #a5b4fc",
+                    "borderRadius": "10px",
+                    "padding": "1px 8px",
+                    "fontSize": "0.7rem",
+                    "color": "#3730a3",
+                    "marginRight": "4px",
+                    "marginBottom": "2px",
+                    "whiteSpace": "nowrap",
+                },
+            )
+            for o in shown
+        ]
+        if leftover > 0:
+            chips.append(html.Span(
+                f"+{leftover} more",
+                style={"fontSize": "0.68rem", "color": "#6b7280",
+                       "fontStyle": "italic", "marginLeft": "2px"},
+            ))
+        options_row = html.Div(
+            [html.Span("Options: ", style={"fontSize": "0.68rem", "color": "#9ca3af",
+                                           "fontWeight": "600", "marginRight": "4px"})]
+            + chips,
+            style={"marginTop": "5px", "lineHeight": "1.8", "flexWrap": "wrap",
+                   "display": "flex", "alignItems": "center"},
+        )
+
+    elif scale_str:
+        options_row = html.Div(
+            [html.Span("Scale: ", style={"fontSize": "0.68rem", "color": "#9ca3af",
+                                         "fontWeight": "600", "marginRight": "4px"}),
+             html.Span(scale_str, style={"fontSize": "0.72rem", "color": "#1e40af",
+                                         "fontStyle": "italic"})],
+            style={"marginTop": "5px"},
+        )
+
+    # ── Tile styling ──────────────────────────────────────────────────────────
     if is_possibly_related:
         tile_style = {
-            "background": "#fffbeb",
-            "border": "1px solid #f59e0b",
-            "borderLeft": "3px solid #f59e0b",
-            "borderRadius": "6px",
-            "padding": "5px 10px",
-            "marginBottom": "4px",
+            "background": "#fffbeb", "border": "1px solid #f59e0b",
+            "borderLeft": "3px solid #f59e0b", "borderRadius": "6px",
+            "padding": "6px 10px", "marginBottom": "4px",
         }
     elif is_extra:
         tile_style = {
-            "background": "#eff6ff",
-            "border": "1px solid #93c5fd",
-            "borderLeft": "3px solid #3b82f6",
-            "borderRadius": "6px",
-            "padding": "5px 10px",
-            "marginBottom": "4px",
+            "background": "#eff6ff", "border": "1px solid #93c5fd",
+            "borderLeft": "3px solid #3b82f6", "borderRadius": "6px",
+            "padding": "6px 10px", "marginBottom": "4px",
         }
     else:
         tile_style = {
-            "background": "#ffffff",
-            "border": "1px solid #e5e7eb",
-            "borderLeft": "3px solid #d1d5db",
-            "borderRadius": "6px",
-            "padding": "5px 10px",
-            "marginBottom": "4px",
+            "background": "#ffffff", "border": "1px solid #e5e7eb",
+            "borderLeft": "3px solid #d1d5db", "borderRadius": "6px",
+            "padding": "6px 10px", "marginBottom": "4px",
         }
 
     badge = None
@@ -282,6 +312,8 @@ def _render_tile(
                 className="d-flex justify-content-end align-items-center",
             ),
         ], className="g-1 align-items-center"),
+        # Inline options row
+        options_row,
         # Tooltip (shown on hover over column name)
         dbc.Tooltip(
             tooltip_body,
@@ -364,11 +396,14 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict) -> html.Div:
         # ── Tile body ──────────────────────────────────────────────────────────
         tile_divs = []
 
+        # Build options/scale strings to pass into each tile
+        scale_str = grp["scale"]
+
         for col in active_matched:
             col_type = type_overrides.get(col) or suggest_var_type(
                 df, [col], "single", q.get("q_type", "") if q else "")
             tile_divs.append(_render_tile(
-                col, df, grp["options_str"], col_type, code, all_q_codes, False, False))
+                col, df, grp["options_str"], scale_str, col_type, code, all_q_codes, False, False))
 
         if active_possibly:
             tile_divs.append(html.Div([
@@ -382,12 +417,12 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict) -> html.Div:
             for col in active_possibly:
                 col_type = type_overrides.get(col, "categorical")
                 tile_divs.append(_render_tile(
-                    col, df, grp["options_str"], col_type, code, all_q_codes, True, False))
+                    col, df, grp["options_str"], scale_str, col_type, code, all_q_codes, True, False))
 
         for col in active_extra:
             col_type = type_overrides.get(col, "categorical")
             tile_divs.append(_render_tile(
-                col, df, grp["options_str"], col_type, code, all_q_codes, False, True))
+                col, df, grp["options_str"], scale_str, col_type, code, all_q_codes, False, True))
 
         if not tile_divs:
             tile_divs.append(html.Div(
