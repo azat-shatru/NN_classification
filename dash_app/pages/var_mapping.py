@@ -30,7 +30,7 @@ VAR_TYPE_OPTIONS = [
     {"label": "open-ended",   "value": "open"},
 ]
 
-DEFAULT_VM_STATE = {"deleted": [], "type_overrides": {}, "reassigned": {}}
+DEFAULT_VM_STATE = {"deleted": [], "type_overrides": {}, "reassigned": {}, "option_assignments": {}}
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -150,6 +150,7 @@ def _render_tile(
     all_q_codes: list,
     is_possibly_related: bool = False,
     is_extra: bool = False,
+    current_opt_assignment: list = None,
 ) -> html.Div:
     """Render one variable tile with inline options."""
     tid = _safe_id(col)
@@ -180,41 +181,24 @@ def _render_tile(
 
     if options_str:
         opts = [o.strip() for o in options_str.split(" | ") if o.strip()]
-        MAX_SHOW = 6
-        shown    = opts[:MAX_SHOW]
-        leftover = len(opts) - MAX_SHOW
-
-        chips = [
+        opt_dropdown_options = [{"label": o, "value": o} for o in opts]
+        options_row = html.Div([
             html.Span(
-                o,
-                style={
-                    "display": "inline-block",
-                    "background": "#e0e7ff",
-                    "border": "1px solid #a5b4fc",
-                    "borderRadius": "10px",
-                    "padding": "1px 8px",
-                    "fontSize": "0.7rem",
-                    "color": "#3730a3",
-                    "marginRight": "4px",
-                    "marginBottom": "2px",
-                    "whiteSpace": "nowrap",
-                },
-            )
-            for o in shown
-        ]
-        if leftover > 0:
-            chips.append(html.Span(
-                f"+{leftover} more",
-                style={"fontSize": "0.68rem", "color": "#6b7280",
-                       "fontStyle": "italic", "marginLeft": "2px"},
-            ))
-        options_row = html.Div(
-            [html.Span("Options: ", style={"fontSize": "0.68rem", "color": "#9ca3af",
-                                           "fontWeight": "600", "marginRight": "4px"})]
-            + chips,
-            style={"marginTop": "5px", "lineHeight": "1.8", "flexWrap": "wrap",
-                   "display": "flex", "alignItems": "center"},
-        )
+                "Assigned options: ",
+                style={"fontSize": "0.68rem", "color": "#9ca3af",
+                       "fontWeight": "600", "marginRight": "4px",
+                       "whiteSpace": "nowrap"},
+            ),
+            dcc.Dropdown(
+                id={"type": "vm-opt-sel", "index": col},
+                options=opt_dropdown_options,
+                value=current_opt_assignment or [],
+                multi=True,
+                placeholder="Select which options this variable represents…",
+                style={"fontSize": "0.72rem", "flex": "1"},
+            ),
+        ], style={"marginTop": "5px", "display": "flex", "alignItems": "center",
+                  "gap": "4px"})
 
     elif scale_str:
         options_row = html.Div(
@@ -335,9 +319,10 @@ def _render_tile(
 # ── group renderer ─────────────────────────────────────────────────────────────
 
 def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict) -> html.Div:
-    deleted        = set(vm_state.get("deleted", []))
-    type_overrides = vm_state.get("type_overrides", {})
-    all_q_codes    = [g["code"] for g in groups if g["code"] != "_UNMATCHED_"]
+    deleted            = set(vm_state.get("deleted", []))
+    type_overrides     = vm_state.get("type_overrides", {})
+    option_assignments = vm_state.get("option_assignments", {})
+    all_q_codes        = [g["code"] for g in groups if g["code"] != "_UNMATCHED_"]
 
     items = []
     for grp in groups:
@@ -403,7 +388,8 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict) -> html.Div:
             col_type = type_overrides.get(col) or suggest_var_type(
                 df, [col], "single", q.get("q_type", "") if q else "")
             tile_divs.append(_render_tile(
-                col, df, grp["options_str"], scale_str, col_type, code, all_q_codes, False, False))
+                col, df, grp["options_str"], scale_str, col_type, code, all_q_codes,
+                False, False, option_assignments.get(col, [])))
 
         if active_possibly:
             tile_divs.append(html.Div([
@@ -417,12 +403,14 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict) -> html.Div:
             for col in active_possibly:
                 col_type = type_overrides.get(col, "categorical")
                 tile_divs.append(_render_tile(
-                    col, df, grp["options_str"], scale_str, col_type, code, all_q_codes, True, False))
+                    col, df, grp["options_str"], scale_str, col_type, code, all_q_codes,
+                    True, False, option_assignments.get(col, [])))
 
         for col in active_extra:
             col_type = type_overrides.get(col, "categorical")
             tile_divs.append(_render_tile(
-                col, df, grp["options_str"], scale_str, col_type, code, all_q_codes, False, True))
+                col, df, grp["options_str"], scale_str, col_type, code, all_q_codes,
+                False, True, option_assignments.get(col, [])))
 
         if not tile_divs:
             tile_divs.append(html.Div(
@@ -741,6 +729,27 @@ def handle_reassign(values, ids, vm_state):
     reassigned = dict(state.get("reassigned", {}))
     reassigned[col] = values[idx]
     state["reassigned"] = reassigned
+    return state
+
+
+@callback(
+    Output("vm-state", "data", allow_duplicate=True),
+    Input({"type": "vm-opt-sel", "index": ALL}, "value"),
+    State({"type": "vm-opt-sel", "index": ALL}, "id"),
+    State("vm-state", "data"),
+    prevent_initial_call=True,
+)
+def handle_option_assign(values, ids, vm_state):
+    if not ctx.triggered_id:
+        return no_update
+    col = ctx.triggered_id["index"]
+    idx = next((i for i, id_ in enumerate(ids) if id_["index"] == col), None)
+    if idx is None:
+        return no_update
+    state = dict(vm_state or DEFAULT_VM_STATE)
+    assignments = dict(state.get("option_assignments", {}))
+    assignments[col] = values[idx] or []
+    state["option_assignments"] = assignments
     return state
 
 
