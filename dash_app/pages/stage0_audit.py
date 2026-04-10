@@ -156,7 +156,6 @@ def layout(state: dict) -> html.Div:
         ], className="stage-header"),
 
         upload_section,
-        html.Div(id="s0-upload-status"),
 
         # Dataset summary metrics
         dbc.Row([

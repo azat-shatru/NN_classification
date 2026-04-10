@@ -238,6 +238,65 @@ body {
     color: #3a6df0;
 }
 
+/* ── Variable Mapping — drag-and-drop option chips ───────────────────── */
+.opt-dropzone {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 30px;
+    padding: 3px 4px;
+    border-radius: 5px;
+    transition: background 0.12s, outline 0.12s;
+}
+
+.opt-dropzone--over {
+    background: #eef2ff !important;
+    outline: 2px dashed #6366f1;
+    outline-offset: -2px;
+}
+
+.opt-chip {
+    display: inline-flex;
+    align-items: center;
+    background: #e0e7ff;
+    color: #3730a3;
+    border: 1px solid #c7d2fe;
+    border-radius: 12px;
+    padding: 2px 9px;
+    font-size: 0.72rem;
+    font-weight: 500;
+    cursor: grab;
+    user-select: none;
+    white-space: nowrap;
+    transition: opacity 0.15s, box-shadow 0.12s;
+    line-height: 1.5;
+}
+
+.opt-chip:hover {
+    background: #c7d2fe;
+    box-shadow: 0 1px 4px rgba(99,102,241,0.25);
+}
+
+.opt-chip--dragging {
+    opacity: 0.4;
+}
+
+.opt-chip-pool {
+    background: #f3f4f6;
+    color: #6b7280;
+    border-color: #d1d5db;
+}
+
+.opt-chip-pool:hover {
+    background: #e5e7eb;
+    box-shadow: none;
+}
+
+/* ── Variable Mapping — var table ────────────────────────────────────── */
+.vm-var-table td {
+    border-top: 1px solid #f3f4f6;
+}
+
 /* ── Sidebar toggle button ────────────────────────────────────────────── */
 #sidebar-toggle-btn {
     display: flex;

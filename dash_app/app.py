@@ -203,7 +203,7 @@ app.layout = html.Div(
 @callback(
     Output("page-content", "children"),
     Input("url", "pathname"),
-    State("app-state", "data"),
+    Input("app-state", "data"),
 )
 def render_page(pathname, state):
     if state is None:

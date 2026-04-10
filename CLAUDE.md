@@ -57,16 +57,19 @@ NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 17
 - After every coding session: update `update_log.py` and run it → logs to NN_Design_Tracker.xlsx
 
 ## Variable Mapping page — key details
-- `_render_tile()` signature: `(col, df, options_str, scale_str, current_type, current_q_code, all_q_codes, is_possibly_related, is_extra)`
-- Options shown inline on each tile as pill chips (max 6 shown, "+N more" for remainder)
-- Scale questions show `Scale: 1 = "low" → N = "high"` instead of chips
-- `qnr_parser._parse_docx` reads docx in document order (paragraphs + tables interleaved) to preserve question→options linkage; handles single-cell, value|label, and multi-cell table rows
+- Layout: accordion card per question; body is a 4-col table (Variable | Options | Type | Question)
+- Options appear as draggable chips in col 2; JS drag-and-drop (assets/dragdrop.js) via document-level event delegation
+- Auto-assignment logic: 1 col → all opts; multi q_type + suffix → indexed opt; grid → all opts per col; scale/numeric → no chips
+- Unassigned options pool row shown at bottom of each table when options remain unmatched
+- "Save changes" button → clientside_callback reads DOM chip positions → vm-drag-assignments store → handle_save server callback
+- `vm-state` uses `storage_type="session"` so assignments persist across page navigation
+- `qnr_parser._parse_docx` reads docx in document order (paragraphs + tables interleaved)
 
-## Current state (last updated 2026-04-10, session 17)
-- Variable Mapping page: accordion tiles, hover preview, delete/move/reassign, interactive multi-select option assignment per tile
-- qnr_parser: fixed docx parsing to read in document order (options in tables now correctly linked to questions)
-- Stage 0: upload fix (html.A → html.Span), column editor drop fix
-- Sidebar collapse toggle implemented
+## Current state (last updated 2026-04-10, session 18)
+- Variable Mapping page: table layout per question, draggable option chips, auto-assignment, Save button
+- Stage 0: duplicate s0-upload-status ID fixed; page now re-renders immediately after upload (app-state as Input to render_page)
+- app.py render_page: app-state changed from State to Input so all pages re-render on state change
+- QC fixes: stage0 duplicate ID, var_mapping save-state bugs, vm-state session persistence
 - Stages 1–9: inherited from original Streamlit rewrite, not yet re-tested end-to-end
 
 ## Open tasks
