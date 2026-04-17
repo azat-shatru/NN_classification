@@ -281,6 +281,19 @@ body {
     opacity: 0.4;
 }
 
+.opt-chip--deleted {
+    opacity: 0.35;
+    text-decoration: line-through;
+    cursor: not-allowed;
+    background: #fee2e2;
+    border-color: #fca5a5;
+    color: #9f1239;
+}
+.opt-chip--deleted .opt-chip-del {
+    color: #ef4444;
+    opacity: 1;
+}
+
 .opt-chip-pool {
     background: #f3f4f6;
     color: #6b7280;
@@ -290,6 +303,125 @@ body {
 .opt-chip-pool:hover {
     background: #e5e7eb;
     box-shadow: none;
+}
+
+/* chip ×  delete button */
+.opt-chip-del {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    padding: 0 0 0 4px;
+    margin: 0;
+    font-size: 0.72rem;
+    line-height: 1;
+    color: #6366f1;
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity 0.1s, color 0.1s;
+}
+.opt-chip-del:hover {
+    opacity: 1;
+    color: #ef4444;
+}
+.opt-chip-pool .opt-chip-del {
+    color: #9ca3af;
+}
+.opt-chip-pool .opt-chip-del:hover {
+    color: #ef4444;
+}
+
+/* question-card delete button */
+.vm-del-q-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: #9ca3af;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.vm-del-q-btn:hover {
+    color: #ef4444;
+    border-color: #fca5a5;
+    background: #fef2f2;
+}
+
+/* full question text in accordion body */
+.vm-q-fulltext {
+    font-size: 0.84rem;
+    color: #374151;
+    line-height: 1.55;
+    margin: 0 0 10px 0;
+    padding: 8px 12px;
+    background: #f8fafc;
+    border-left: 3px solid #c7d2fe;
+    border-radius: 0 4px 4px 0;
+}
+
+/* inline chip text edit input */
+.opt-chip-input {
+    border: none;
+    outline: none;
+    background: transparent;
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: inherit;
+    width: 90px;
+    padding: 0;
+    font-family: inherit;
+}
+
+/* "Add options" toggle button inside pool row */
+.vm-add-opts-btn {
+    background: none;
+    border: 1px dashed #a5b4fc;
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: 0.68rem;
+    color: #6366f1;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s, border-color 0.12s;
+}
+.vm-add-opts-btn:hover {
+    background: #eef2ff;
+    border-color: #6366f1;
+}
+
+/* paste panel textarea + button */
+.vm-opts-textarea {
+    width: 100%;
+    font-size: 0.75rem;
+    border: 1px solid #c7d2fe;
+    border-radius: 6px;
+    padding: 6px 8px;
+    resize: vertical;
+    font-family: monospace;
+    color: #1e2130;
+    background: #fff;
+    margin-bottom: 6px;
+    box-sizing: border-box;
+}
+.vm-opts-add-btn {
+    background: #6366f1;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 14px;
+    font-size: 0.74rem;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+.vm-opts-add-btn:hover {
+    background: #4f46e5;
 }
 
 /* ── Variable Mapping — var table ────────────────────────────────────── */

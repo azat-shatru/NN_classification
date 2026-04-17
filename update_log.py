@@ -6,24 +6,29 @@ wb = openpyxl.load_workbook('NN_Design_Tracker.xlsx')
 ws = wb['Session Log']
 
 next_row = ws.max_row + 1
-next_session = 18
+next_session = 19
 
 decision_text = (
-    "Session 2026-04-10 — Var Mapping redesign + QC fixes. "
-    "(1) Variable Mapping page fully redesigned: replaced per-variable accordion tiles with a "
-    "4-column table per question (Variable | Options | Type | Question). Options rendered as "
-    "draggable HTML chips (opt-chip class); drag-and-drop handled by assets/dragdrop.js using "
-    "document-level event delegation so listeners survive Dash re-renders. Drop zones (opt-dropzone) "
-    "highlight on hover. Auto-assignment logic: single col → all opts; multi q_type + numeric/letter "
-    "suffix → indexed opt; grid → all opts per col; scale/numeric → no chips. Unassigned options "
-    "pool row shown at table bottom. Save button triggers clientside_callback that reads DOM chip "
-    "positions into vm-drag-assignments store, then handle_save server callback commits all changes. "
-    "vm-state storage changed to session so assignments survive page navigation. handle_save guards "
-    "against empty drag_assigns dict overwriting saved option_assignments. "
-    "(2) Stage 0 QC fix: removed duplicate id=s0-upload-status element (was at lines 103 and 159). "
-    "(3) app.py QC fix: render_page app-state changed from State to Input so pages re-render "
-    "immediately after upload without requiring navigation. "
-    "New file: dash_app/assets/dragdrop.js. CSS additions: opt-chip, opt-dropzone, opt-chip-pool styles."
+    "Session 2026-04-17 — qnr_parser docx rewrite + var_mapping grid-prefix expansion + B3 flush bug fix. "
+    "(1) _parse_docx fully rewritten to return list[dict] directly instead of list[str]. "
+    "New _parse_table_for_options helper: skips row 0 always; reads ONLY first column; "
+    "skips vertical-merge continuation rows (w:vMerge without val=restart); "
+    "skips horizontally-merged first-cell rows (w:gridSpan > 1); "
+    "skips single-cell disclaimer rows; extracts table_col_headers (row 0 cols 1+) and table_n_cols. "
+    "Two-pass approach: pass 1 collects (para, text) and (table, obj) in document order; "
+    "pass 2 groups into questions. Table path: buffered paragraphs before table → question text, "
+    "table → options. No-table path: all paragraphs except last → question text, last → single option "
+    "(unless it starts with Please/Your answers or is all-caps section header). "
+    "Validation warning printed if extracted options < 90% of unmerged row count. "
+    "parse_questionnaire short-circuits for .docx, returning _parse_docx result directly. "
+    "PDF/xlsx/txt paths unchanged. "
+    "(2) _default_option_assignments in var_mapping.py: added grid-prefix expansion. "
+    "For questions with table_n_cols > 2 and table_col_headers present, if n_matched_vars "
+    "approximately equals n_opts × (n_table_cols - 1) within ±10%, expands options as "
+    "'col_header opt' for each option × each column header, assigned 1:1 to matched+extra cols. "
+    "(3) Bug fix: _flush_question called with [] instead of text_buf when a post-table paragraph "
+    "appeared before the next question code — pre-table paragraphs were silently discarded. "
+    "Fixed by passing text_buf in the had_table branch (qnr_parser.py line ~336)."
 )
 
 open_questions = (
@@ -49,8 +54,8 @@ def copy_row_style(src_row_num, dst_row_num):
 copy_row_style(ws.max_row, next_row)
 
 ws.cell(row=next_row, column=1).value = next_session
-ws.cell(row=next_row, column=2).value = '2026-04-10'
-ws.cell(row=next_row, column=3).value = 'Var Mapping: table+drag-drop redesign; Stage 0 + app.py QC fixes'
+ws.cell(row=next_row, column=2).value = '2026-04-17'
+ws.cell(row=next_row, column=3).value = 'qnr_parser docx rewrite: proper merge detection, table-path/no-table-path, grid-prefix expansion, B3 flush bug fix'
 ws.cell(row=next_row, column=4).value = decision_text
 ws.cell(row=next_row, column=5).value = open_questions
 

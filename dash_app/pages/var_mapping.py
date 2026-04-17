@@ -33,7 +33,8 @@ VAR_TYPE_OPTIONS = [
 ]
 
 DEFAULT_VM_STATE = {
-    "deleted": [], "type_overrides": {}, "reassigned": {}, "option_assignments": {}
+    "deleted": [], "type_overrides": {}, "reassigned": {}, "option_assignments": {},
+    "deleted_questions": [], "deleted_options": {},
 }
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -129,12 +130,44 @@ def _default_option_assignments(df: pd.DataFrame, groups: list) -> dict:
                     if 0 <= idx < len(opts):
                         defaults[col] = [opts[idx]]
                         continue
-                defaults[col] = list(opts)
+                # No suffix match — leave unassigned (user assigns manually)
 
         else:
-            # grid or single with multiple cols → all options per col
-            for col in all_cols:
-                defaults[col] = list(opts)
+            # grid or other multi-col: assign 1 option per column in order.
+            # Extra options that exceed number of columns stay in the pool.
+            for i, col in enumerate(all_cols):
+                if i < len(opts):
+                    defaults[col] = [opts[i]]
+
+    # ── Grid-prefix expansion: expand options × table column headers ─────────
+    for grp in groups:
+        q = grp["question"]
+        if not q:
+            continue
+        if q.get("table_n_cols", 1) <= 2 or not q.get("table_col_headers"):
+            continue
+
+        n_opts = len(q.get("options", []))
+        n_extra_cols = q["table_n_cols"] - 1   # columns 2+
+        col_headers = q["table_col_headers"]    # list of n_extra_cols strings
+        all_cols = grp["matched_cols"] + grp["extra_cols"]  # NOT possibly_related
+        n_vars = len(all_cols)
+
+        if n_vars > 0 and n_opts > 0 and abs(n_vars - n_opts * n_extra_cols) <= max(1, round(n_opts * n_extra_cols * 0.1)):
+            # Expand: for each opt, for each col_header → "col_header opt"
+            expanded_opts = []
+            for opt in q["options"]:
+                for ch in col_headers:
+                    expanded_opts.append(f"{ch} {opt}")
+
+            if len(expanded_opts) == n_vars:
+                for i, col in enumerate(all_cols):
+                    defaults[col] = [expanded_opts[i]]
+            else:
+                # Assign as many as fit
+                for i, col in enumerate(all_cols):
+                    if i < len(expanded_opts):
+                        defaults[col] = [expanded_opts[i]]
 
     return defaults
 
@@ -225,13 +258,15 @@ def _render_var_table(
     deleted        = set(vm_state.get("deleted", []))
     type_overrides = vm_state.get("type_overrides", {})
     user_assigns   = vm_state.get("option_assignments", {})
+    del_opts       = set(vm_state.get("deleted_options", {}).get(grp["code"], []))
 
     code = grp["code"]
     q    = grp["question"]
 
     def opt_for(col):
         # Explicit user save wins; else auto-computed default
-        return user_assigns[col] if col in user_assigns else default_assignments.get(col, [])
+        raw = user_assigns[col] if col in user_assigns else default_assignments.get(col, [])
+        return [o for o in raw if o not in del_opts]
 
     # Collect active columns with their role flag
     col_roles: list[tuple] = []   # (col, is_possibly, is_extra)
@@ -253,26 +288,93 @@ def _render_var_table(
         )
 
     # Unassigned options pool (options not yet placed on any row)
-    q_opts       = q.get("options", []) if q else []
+    q_opts       = [o for o in (q.get("options", []) if q else []) if o not in del_opts]
     assigned_set = {o for col, _, _ in col_roles for o in opt_for(col)}
     pool         = [o for o in q_opts if o not in assigned_set]
 
     TD = {"padding": "5px 8px", "verticalAlign": "middle"}
+
+    def _chip(opt, extra_cls=""):
+        return html.Span(
+            [
+                opt,
+                html.Button(
+                    "×",
+                    id={"type": "vm-del-opt-btn", "index": f"{code}||{opt}"},
+                    n_clicks=0,
+                    className=f"opt-chip-del{' ' + extra_cls if extra_cls else ''}",
+                ),
+            ],
+            className=f"opt-chip{' opt-chip-pool' if extra_cls else ''}",
+            draggable="true",
+            **{"data-opt": opt},
+        )
+
+    # ── Pool row (at top so unassigned options are immediately visible) ──────────
+    safe_code = re.sub(r"[^A-Za-z0-9]", "-", code)
+    pool_row = html.Tr([
+        html.Td(
+            html.Div([
+                html.Span("unassigned",
+                          style={"color": "#9ca3af", "fontSize": "0.74rem",
+                                 "fontStyle": "italic", "marginRight": "6px"}),
+                # "Add options" toggle button
+                html.Button(
+                    "+ Add",
+                    className="vm-add-opts-btn",
+                    **{"data-qcode": safe_code},
+                    title="Add custom options by typing or pasting",
+                ),
+            ], style={"display": "flex", "alignItems": "center"}),
+            style={"padding": "5px 8px", "background": "#f9fafb",
+                   "verticalAlign": "middle", "width": "180px"},
+        ),
+        html.Td(
+            html.Div(
+                [_chip(o, extra_cls="pool") for o in pool],
+                className="opt-dropzone",
+                **{"data-col": "__pool__"},
+            ),
+            style={"padding": "5px 8px", "background": "#f9fafb"},
+        ),
+        html.Td(style={"background": "#f9fafb"}),
+        html.Td(style={"background": "#f9fafb"}),
+    ])
+
+    # Paste/type panel (hidden by default; toggled by JS)
+    paste_row = html.Tr([
+        html.Td(
+            html.Span("Paste or type options (one per line):",
+                      style={"fontSize": "0.72rem", "color": "#6b7280"}),
+            style={"padding": "4px 8px", "background": "#f0f4ff",
+                   "verticalAlign": "top"},
+        ),
+        html.Td(
+            html.Div([
+                html.Textarea(
+                    placeholder="Paste here…\nOne option per line",
+                    className="vm-opts-textarea",
+                    **{"data-qcode": safe_code},
+                    rows=4,
+                ),
+                html.Button(
+                    "Add to pool",
+                    className="vm-opts-add-btn",
+                    **{"data-qcode": safe_code},
+                ),
+            ]),
+            colSpan=3,
+            style={"padding": "4px 8px", "background": "#f0f4ff"},
+        ),
+    ], className="vm-paste-row", style={"display": "none"},
+       **{"data-qcode": safe_code})
 
     rows = []
     for col, is_possibly, is_extra in col_roles:
         col_type = type_overrides.get(col) or suggest_var_type(
             df, [col], "single", q.get("q_type", "") if q else "")
 
-        chips = [
-            html.Span(
-                opt,
-                className="opt-chip",
-                draggable="true",
-                **{"data-opt": opt},
-            )
-            for opt in opt_for(col)
-        ]
+        chips = [_chip(opt) for opt in opt_for(col)]
 
         if is_possibly:
             badge  = dbc.Badge("~related", color="warning", className="ms-1",
@@ -355,31 +457,7 @@ def _render_var_table(
                 ),
                 style={**td, "width": "155px"},
             ),
-        ]))
-
-    # Optional unassigned-options pool row
-    if pool:
-        rows.append(html.Tr([
-            html.Td(
-                html.Span("unassigned",
-                          style={"color": "#9ca3af", "fontSize": "0.74rem",
-                                 "fontStyle": "italic"}),
-                style={"padding": "5px 8px", "background": "#f9fafb",
-                       "verticalAlign": "middle", "width": "180px"},
-            ),
-            html.Td(
-                html.Div(
-                    [html.Span(o, className="opt-chip opt-chip-pool",
-                               draggable="true", **{"data-opt": o})
-                     for o in pool],
-                    className="opt-dropzone",
-                    **{"data-col": "__pool__"},
-                ),
-                style={"padding": "5px 8px", "background": "#f9fafb"},
-            ),
-            html.Td(style={"background": "#f9fafb"}),
-            html.Td(style={"background": "#f9fafb"}),
-        ]))
+        ], id="vm-row-" + _safe_id(col)))
 
     return html.Table([
         html.Thead(
@@ -388,7 +466,7 @@ def _render_var_table(
                         style={"fontSize": "0.71rem", "color": "#9ca3af",
                                "fontWeight": "600", "padding": "4px 8px",
                                "width": "180px"}),
-                html.Th("Options — drag to reassign",
+                html.Th("Options — drag to reassign  ·  dbl-click chip to edit",
                         style={"fontSize": "0.71rem", "color": "#9ca3af",
                                "fontWeight": "600", "padding": "4px 8px"}),
                 html.Th("Type",
@@ -402,7 +480,7 @@ def _render_var_table(
             ]),
             style={"borderBottom": "1px solid #e5e7eb"},
         ),
-        html.Tbody(rows),
+        html.Tbody([pool_row, paste_row] + rows),
     ], style={"width": "100%", "borderCollapse": "collapse",
               "marginTop": "6px", "tableLayout": "fixed"})
 
@@ -412,6 +490,7 @@ def _render_var_table(
 def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict,
                    default_assignments: dict = None) -> html.Div:
     deleted             = set(vm_state.get("deleted", []))
+    deleted_questions   = set(vm_state.get("deleted_questions", []))
     default_assignments = default_assignments or {}
     all_q_codes         = [g["code"] for g in groups if g["code"] != "_UNMATCHED_"]
 
@@ -420,9 +499,24 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict,
         code = grp["code"]
         q    = grp["question"]
 
+        # Skip questions that have been deleted and saved
+        if code in deleted_questions:
+            continue
+
         active_matched  = [c for c in grp["matched_cols"]     if c not in deleted]
         active_possibly = [c for c in grp["possibly_related"] if c not in deleted]
         active_extra    = [c for c in grp["extra_cols"]        if c not in deleted]
+
+        # ── Delete-question button (not shown for _UNMATCHED_) ─────────────────
+        del_q_btn = (
+            html.Button(
+                "✕",
+                id={"type": "vm-del-q-btn", "index": code},
+                n_clicks=0,
+                className="vm-del-q-btn",
+                title="Remove this question and its variables",
+            ) if code != "_UNMATCHED_" else None
+        )
 
         # ── Accordion header ───────────────────────────────────────────────────
         if code == "_UNMATCHED_":
@@ -441,7 +535,8 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict,
                          "QNR only — no data cols" if grp["status"] == "qnr_only"
                          else "No QNR match")
             q_text    = q.get("question", "") if q else ""
-            q_display = (q_text[:90] + "…") if len(q_text) > 90 else q_text
+            # Show first 70 chars in header; full text shown at top of body
+            q_preview = (q_text[:70] + "…") if len(q_text) > 70 else q_text
 
             badges = [
                 dbc.Badge(q_type, color="info", className="ms-1") if q_type else None,
@@ -456,12 +551,25 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict,
 
             header_content = html.Div([
                 html.Span(code, className="vm-q-code"),
-                html.Span(q_display, className="vm-q-text"),
+                html.Span(q_preview, className="vm-q-text"),
                 *[b for b in badges if b],
+                del_q_btn,
             ], className="d-flex align-items-center gap-2 flex-wrap")
 
+            # Full question text block shown at top of accordion body
+            q_text_block = html.P(
+                q_text,
+                className="vm-q-fulltext",
+            ) if q_text else None
+
+        body_content = html.Div([
+            q_text_block,
+            _render_var_table(grp, df, vm_state, default_assignments, all_q_codes),
+        ]) if (code != "_UNMATCHED_" and q_text_block) else \
+            _render_var_table(grp, df, vm_state, default_assignments, all_q_codes)
+
         items.append(dbc.AccordionItem(
-            children=_render_var_table(grp, df, vm_state, default_assignments, all_q_codes),
+            children=body_content,
             title=header_content,
             item_id=code,
         ))
@@ -567,6 +675,9 @@ def layout(state: dict) -> html.Div:
         upload_row,
         dcc.Store(id="vm-state", data=DEFAULT_VM_STATE, storage_type="session"),
         dcc.Store(id="vm-drag-assignments", data=None),
+        dcc.Store(id="vm-pending-deletes", data=[], storage_type="memory"),
+        dcc.Store(id="vm-pending-delete-questions", data=[], storage_type="memory"),
+        dcc.Store(id="vm-pending-delete-opts", data={}, storage_type="memory"),
         html.Div(id="vm-save-feedback", className="mb-1"),
         html.Div(id="vm-mapping-outer"),
     ])
@@ -710,7 +821,8 @@ clientside_callback(
             var col = zone.getAttribute('data-col');
             if (!col || col === '__pool__') return;
             var opts = [];
-            zone.querySelectorAll('.opt-chip').forEach(function(chip) {
+            // Exclude chips that are queued for deletion
+            zone.querySelectorAll('.opt-chip:not(.opt-chip--deleted)').forEach(function(chip) {
                 opts.push(chip.getAttribute('data-opt'));
             });
             assignments[col] = opts;
@@ -724,42 +836,214 @@ clientside_callback(
 )
 
 
-# ── server callbacks ──────────────────────────────────────────────────────────
+# ── clientside: toggle variable-row deletion (grey ↔ restore) ────────────────
 
-@callback(
-    Output("vm-state", "data"),
+clientside_callback(
+    """
+    function(n_clicks_list, pending) {
+        var ctx = window.dash_clientside.callback_context;
+        if (!ctx.triggered || !ctx.triggered.length) return window.dash_clientside.no_update;
+        var hasClick = (n_clicks_list || []).some(function(n) { return n > 0; });
+        if (!hasClick) return window.dash_clientside.no_update;
+
+        var prop = ctx.triggered[0].prop_id;
+        var col;
+        try {
+            col = JSON.parse(prop.split('.n_clicks')[0]).index;
+        } catch(e) { return window.dash_clientside.no_update; }
+
+        var list = Array.isArray(pending) ? pending.slice() : [];
+        var idx  = list.indexOf(col);
+        var safeId = 'vm-row-vmt-' + col.replace(/[^A-Za-z0-9]/g, '-');
+        var row  = document.getElementById(safeId);
+
+        if (idx !== -1) {
+            // Already queued → revert
+            list.splice(idx, 1);
+            if (row) { row.style.opacity = ''; row.style.textDecoration = ''; }
+        } else {
+            // Queue for deletion
+            list.push(col);
+            if (row) { row.style.opacity = '0.35'; row.style.textDecoration = 'line-through'; }
+        }
+        return list;
+    }
+    """,
+    Output("vm-pending-deletes", "data"),
     Input({"type": "vm-del-btn", "index": ALL}, "n_clicks"),
-    State("vm-state", "data"),
+    State("vm-pending-deletes", "data"),
     prevent_initial_call=True,
 )
-def handle_delete(n_clicks_list, vm_state):
-    if not ctx.triggered_id or not any(n for n in (n_clicks_list or []) if n):
-        return no_update
-    col     = ctx.triggered_id["index"]
-    state   = dict(vm_state or DEFAULT_VM_STATE)
-    deleted = list(state.get("deleted", []))
-    if col not in deleted:
-        deleted.append(col)
-    state["deleted"] = deleted
-    return state
 
+
+# ── clientside: toggle question-card deletion (grey ↔ restore) ───────────────
+
+clientside_callback(
+    """
+    function(n_clicks_list, pending) {
+        var ctx = window.dash_clientside.callback_context;
+        if (!ctx.triggered || !ctx.triggered.length) return window.dash_clientside.no_update;
+        var hasClick = (n_clicks_list || []).some(function(n) { return n > 0; });
+        if (!hasClick) return window.dash_clientside.no_update;
+
+        var prop = ctx.triggered[0].prop_id;
+        var code;
+        try {
+            code = JSON.parse(prop.split('.n_clicks')[0]).index;
+        } catch(e) { return window.dash_clientside.no_update; }
+
+        var list = Array.isArray(pending) ? pending.slice() : [];
+        var idx  = list.indexOf(code);
+
+        // Find the accordion-item containing the .vm-q-code span with this text
+        var targetItem = null;
+        document.querySelectorAll('.accordion-item').forEach(function(item) {
+            item.querySelectorAll('.vm-q-code').forEach(function(span) {
+                if (span.textContent.trim() === code) targetItem = item;
+            });
+        });
+
+        if (idx !== -1) {
+            // Already queued → revert (remove greying, restore interactivity)
+            list.splice(idx, 1);
+            if (targetItem) {
+                targetItem.style.opacity = '';
+                targetItem.style.transition = '';
+            }
+        } else {
+            // Queue for deletion (grey out but keep pointer events so user can toggle back)
+            list.push(code);
+            if (targetItem) {
+                targetItem.style.opacity = '0.3';
+                targetItem.style.transition = 'opacity 0.2s';
+            }
+        }
+        return list;
+    }
+    """,
+    Output("vm-pending-delete-questions", "data"),
+    Input({"type": "vm-del-q-btn", "index": ALL}, "n_clicks"),
+    State("vm-pending-delete-questions", "data"),
+    prevent_initial_call=True,
+)
+
+
+# ── clientside: toggle option-chip deletion (.opt-chip--deleted ↔ normal) ────
+
+clientside_callback(
+    """
+    function(n_clicks_list, pending) {
+        var ctx = window.dash_clientside.callback_context;
+        if (!ctx.triggered || !ctx.triggered.length) return window.dash_clientside.no_update;
+        var hasClick = (n_clicks_list || []).some(function(n) { return n > 0; });
+        if (!hasClick) return window.dash_clientside.no_update;
+
+        var prop = ctx.triggered[0].prop_id;
+        var index;
+        try {
+            index = JSON.parse(prop.split('.n_clicks')[0]).index;
+        } catch(e) { return window.dash_clientside.no_update; }
+
+        // index is "QCODE||opt_text"
+        var sep = index.indexOf('||');
+        if (sep === -1) return window.dash_clientside.no_update;
+        var qcode = index.substring(0, sep);
+        var opt   = index.substring(sep + 2);
+
+        // Toggle .opt-chip--deleted on the chip
+        var btnId = '{"index":"' + index + '","type":"vm-del-opt-btn"}';
+        var btn   = document.getElementById(btnId);
+        if (btn) {
+            var chip = btn.closest('.opt-chip');
+            if (chip) chip.classList.toggle('opt-chip--deleted');
+        }
+
+        // Toggle in pending map
+        var map = (pending && typeof pending === 'object' && !Array.isArray(pending))
+                  ? Object.assign({}, pending) : {};
+        var optList = Array.isArray(map[qcode]) ? map[qcode].slice() : [];
+        var optIdx  = optList.indexOf(opt);
+        if (optIdx !== -1) {
+            optList.splice(optIdx, 1);   // revert
+        } else {
+            optList.push(opt);           // queue
+        }
+        if (optList.length > 0) {
+            map[qcode] = optList;
+        } else {
+            delete map[qcode];
+        }
+        return map;
+    }
+    """,
+    Output("vm-pending-delete-opts", "data"),
+    Input({"type": "vm-del-opt-btn", "index": ALL}, "n_clicks"),
+    State("vm-pending-delete-opts", "data"),
+    prevent_initial_call=True,
+)
+
+
+# ── server callbacks ──────────────────────────────────────────────────────────
 
 @callback(
     Output("vm-state", "data", allow_duplicate=True),
     Output("vm-save-feedback", "children"),
+    Output("vm-pending-deletes", "data", allow_duplicate=True),
+    Output("vm-pending-delete-questions", "data", allow_duplicate=True),
+    Output("vm-pending-delete-opts", "data", allow_duplicate=True),
     Input("vm-drag-assignments", "data"),
     State({"type": "vm-type-sel",   "index": ALL}, "value"),
     State({"type": "vm-type-sel",   "index": ALL}, "id"),
     State({"type": "vm-assign-sel", "index": ALL}, "value"),
     State({"type": "vm-assign-sel", "index": ALL}, "id"),
     State("vm-state", "data"),
+    State("vm-pending-deletes", "data"),
+    State("vm-pending-delete-questions", "data"),
+    State("vm-pending-delete-opts", "data"),
     prevent_initial_call=True,
 )
 def handle_save(drag_assigns, type_vals, type_ids,
-                assign_vals, assign_ids, vm_state):
+                assign_vals, assign_ids, vm_state,
+                pending_deletes, pending_del_questions, pending_del_opts):
     if drag_assigns is None:
-        return no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update
     state = dict(vm_state or DEFAULT_VM_STATE)
+
+    # Merge pending variable deletes
+    deleted = list(state.get("deleted", []))
+    for col in (pending_deletes or []):
+        if col not in deleted:
+            deleted.append(col)
+
+    # Merge pending question deletes — also mark all their columns as deleted
+    del_questions = list(state.get("deleted_questions", []))
+    raw_df    = server_store.get_df("raw_df")
+    questions = server_store.get_val("qnr_questions", [])
+    for qcode in (pending_del_questions or []):
+        if qcode not in del_questions:
+            del_questions.append(qcode)
+        # Auto-delete all columns belonging to this question
+        if raw_df is not None and questions:
+            grps = _build_groups(raw_df, questions, state)
+            for grp in grps:
+                if grp["code"] == qcode:
+                    all_cols = (grp["matched_cols"] + grp["possibly_related"]
+                                + grp["extra_cols"])
+                    for col in all_cols:
+                        if col not in deleted:
+                            deleted.append(col)
+    state["deleted"]           = deleted
+    state["deleted_questions"] = del_questions
+
+    # Merge pending option deletes: {qcode: [opt, ...]}
+    del_opts = dict(state.get("deleted_options", {}))
+    for qcode, opts in (pending_del_opts or {}).items():
+        existing = list(del_opts.get(qcode, []))
+        for o in opts:
+            if o not in existing:
+                existing.append(o)
+        del_opts[qcode] = existing
+    state["deleted_options"] = del_opts
 
     # Option assignments from drag-and-drop DOM snapshot.
     # Only overwrite if the clientside callback actually found dropzones;
@@ -787,15 +1071,18 @@ def handle_save(drag_assigns, type_vals, type_ids,
         [html.I(className="bi bi-check-circle me-2"), "Changes saved."],
         color="success", dismissable=True, duration=3000,
         style={"padding": "6px 12px", "fontSize": "0.82rem"},
-    )
+    ), [], [], {}
 
 
 @callback(
     Output("vm-state", "data", allow_duplicate=True),
+    Output("vm-pending-deletes", "data", allow_duplicate=True),
+    Output("vm-pending-delete-questions", "data", allow_duplicate=True),
+    Output("vm-pending-delete-opts", "data", allow_duplicate=True),
     Input("vm-reset-btn", "n_clicks"),
     prevent_initial_call=True,
 )
 def reset_vm_state(n):
     if n:
-        return DEFAULT_VM_STATE
-    return no_update
+        return DEFAULT_VM_STATE, [], [], {}
+    return no_update, no_update, no_update, no_update

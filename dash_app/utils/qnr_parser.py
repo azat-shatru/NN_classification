@@ -49,6 +49,13 @@ GRID_RE   = re.compile(r"one selection per row|per row|grid", re.IGNORECASE)
 # Section headers (no question code — all-caps or title-only lines)
 SECTION_RE = re.compile(r"^[A-Z][A-Z\s\-/&.,]+$")
 
+# Table header rows to skip (column labels that are not answer options)
+TABLE_HEADER_RE = re.compile(
+    r"^(answer\s*code|answer\s*label|code|label|option|answer|response|"
+    r"category|item|description|statement|variable|value|score|choice)s?\s*$",
+    re.IGNORECASE
+)
+
 
 # ── text cleaning ──────────────────────────────────────────────────────────────
 
@@ -106,18 +113,121 @@ def _detect_type(question_text: str, pn_text: str, options: list) -> dict:
     return result
 
 
+# ── docx table helper ────────────────────────────────────────────────────────
+
+def _parse_table_for_options(tbl) -> dict:
+    """
+    Extract options from a docx table object.
+    Returns {"options": [...], "table_col_headers": [...],
+             "table_n_cols": int, "n_unmerged_rows": int}.
+    """
+    from docx.oxml.ns import qn
+
+    rows = tbl.rows
+    if not rows:
+        return {"options": [], "table_col_headers": [], "table_n_cols": 0, "n_unmerged_rows": 0}
+
+    # ── Step 0: single-cell table (disclaimer) detection ─────────────────────
+    if len(rows) == 1:
+        return {"options": [], "table_col_headers": [], "table_n_cols": 1, "n_unmerged_rows": 0}
+
+    # Check if every row is a single merged cell
+    all_single = True
+    for row in rows:
+        unique_tcs = []
+        for cell in row.cells:
+            if not unique_tcs or cell._tc is not unique_tcs[-1]:
+                unique_tcs.append(cell._tc)
+        if len(unique_tcs) > 1:
+            all_single = False
+            break
+    if all_single:
+        return {"options": [], "table_col_headers": [], "table_n_cols": 1, "n_unmerged_rows": 0}
+
+    # ── Step 1: read column count and headers from row 0 ─────────────────────
+    row0 = rows[0]
+    unique_tcs_r0 = []
+    for cell in row0.cells:
+        if not unique_tcs_r0 or cell._tc is not unique_tcs_r0[-1]:
+            unique_tcs_r0.append(cell._tc)
+    n_cols = len(unique_tcs_r0)
+
+    # Header texts: skip col 0, take col 1+
+    header_texts = []
+    for tc in unique_tcs_r0:
+        # Get text from the tc element
+        texts = []
+        for p in tc.findall(qn("w:p")):
+            t = "".join(node.text or "" for node in p.iter() if node.tag == qn("w:t"))
+            texts.append(t)
+        header_texts.append(" ".join(texts).strip())
+    table_col_headers = header_texts[1:]  # skip col 0
+
+    # ── Step 2: iterate rows 1+ for options ──────────────────────────────────
+    options = []
+    n_unmerged_rows = 0
+
+    for row_idx in range(1, len(rows)):
+        row = rows[row_idx]
+        cells = row.cells
+        if not cells:
+            continue
+
+        first_tc = cells[0]._tc
+
+        # Skip: vertical merge continuation on first cell
+        vmerge = first_tc.find(qn("w:tcPr"))
+        if vmerge is not None:
+            vm_el = vmerge.find(qn("w:vMerge"))
+            if vm_el is not None and vm_el.get(qn("w:val")) != "restart":
+                continue
+
+        # Skip: horizontal merge on first cell (gridSpan > 1)
+        if vmerge is not None:
+            grid_span = vmerge.find(qn("w:gridSpan"))
+            if grid_span is not None:
+                span_val = grid_span.get(qn("w:val"))
+                if span_val and int(span_val) > 1:
+                    continue
+
+        # Skip: single-cell row spanning all columns
+        unique_tcs_row = []
+        for cell in cells:
+            if not unique_tcs_row or cell._tc is not unique_tcs_row[-1]:
+                unique_tcs_row.append(cell._tc)
+        if len(unique_tcs_row) == 1 and n_cols > 1:
+            continue
+
+        # Not skipped → count as unmerged
+        n_unmerged_rows += 1
+
+        text = cells[0].text.strip()
+        if not text:
+            continue
+        if TABLE_HEADER_RE.match(text):
+            continue
+
+        options.append(text)
+
+    # Validation logging
+    if n_unmerged_rows > 0 and len(options) < (n_unmerged_rows - 1) * 0.9 - 1:
+        print(f"[qnr_parser] WARNING: only {len(options)} options extracted from "
+              f"{n_unmerged_rows} unmerged rows — check table structure")
+
+    return {
+        "options": options,
+        "table_col_headers": table_col_headers,
+        "table_n_cols": n_cols,
+        "n_unmerged_rows": n_unmerged_rows,
+    }
+
+
 # ── docx parser ───────────────────────────────────────────────────────────────
 
-def _parse_docx(path: Path) -> list[str]:
+def _parse_docx(path: Path) -> list[dict]:
     """
     Parse docx in true document order — paragraphs and tables interleaved.
-    This preserves the question → options relationship when options live in tables.
-
-    Table handling:
-      - Single-cell rows  → one option per line  ("Strongly disagree")
-      - Two-cell rows     → value|label pair      ("1" + "Strongly disagree" → "1. Strongly disagree")
-      - Multi-cell rows   → join with " | "
-    Merged cells are deduplicated via element identity.
+    Returns list[dict] of question dicts directly (no intermediate line list).
     """
     import docx
     from docx.oxml.ns import qn
@@ -125,55 +235,128 @@ def _parse_docx(path: Path) -> list[str]:
     from docx.table import Table as _Table
 
     doc = docx.Document(str(path))
-    lines = []
 
+    # ── Pass 1: collect elements in document order ───────────────────────────
+    elements = []
     for child in doc.element.body:
         tag = child.tag
-
-        # ── paragraph ─────────────────────────────────────────────────────────
         if tag == qn("w:p"):
             t = _Para(child, doc).text.strip()
             if t:
-                lines.append(t)
-
-        # ── table ─────────────────────────────────────────────────────────────
+                elements.append(("para", t))
         elif tag == qn("w:tbl"):
-            tbl = _Table(child, doc)
-            seen_tc = set()          # deduplicate merged cells by element identity
+            elements.append(("table", _Table(child, doc)))
 
-            for row in tbl.rows:
-                cell_texts = []
-                for cell in row.cells:
-                    tc = cell._tc
-                    if id(tc) in seen_tc:
-                        continue
-                    seen_tc.add(id(tc))
-                    ct = cell.text.strip()
-                    if ct:
-                        cell_texts.append(ct)
+    # ── Pass 2: group into questions ─────────────────────────────────────────
+    questions = []
+    current_q = None
+    text_buf: list[str] = []    # paragraphs after the Q_CODE line
+    had_table = False           # whether a table was already consumed for current_q
 
-                if not cell_texts:
-                    continue
+    NON_OPTION_STARTS = ("Please", "Your answers")
 
-                if len(cell_texts) == 1:
-                    # Single column → each row is one option
-                    lines.append(cell_texts[0])
+    def _flush_question(q, buf, table_info):
+        """Finalize and append a question dict."""
+        if not q:
+            return
 
-                elif len(cell_texts) == 2:
-                    # Two columns — common pattern: value | label
-                    val, label = cell_texts
-                    if re.match(r"^\d+\.?$", val):
-                        # "1" + "Strongly disagree" → "1. Strongly disagree"
-                        sep = "" if val.endswith(".") else "."
-                        lines.append(f"{val}{sep} {label}")
-                    else:
-                        lines.append(f"{val} | {label}")
-
+        if table_info is not None:
+            # Table path: all buffered paragraphs go into question text
+            for line in buf:
+                q["question"] = (q["question"] + " " + line).strip()
+            q["options"] = table_info["options"]
+            q["table_col_headers"] = table_info["table_col_headers"]
+            q["table_n_cols"] = table_info["table_n_cols"]
+        else:
+            # No-table path
+            if buf:
+                last = buf[-1]
+                # Append all but last to question text
+                for line in buf[:-1]:
+                    q["question"] = (q["question"] + " " + line).strip()
+                # Last paragraph: treat as option unless it looks like instructions
+                if (last.startswith(tuple(NON_OPTION_STARTS))
+                        or SECTION_RE.match(last)):
+                    q["question"] = (q["question"] + " " + last).strip()
+                    q["options"] = []
                 else:
-                    # Multi-column: join non-empty cells
-                    lines.append(" | ".join(cell_texts))
+                    q["options"] = [last]
+            else:
+                q["options"] = []
 
-    return lines
+        # Detect type and merge
+        info = _detect_type(q["question"], q.get("pn_notes", ""), q["options"])
+        q.update(info)
+        questions.append(q)
+
+    table_info_for_current = None
+
+    for kind, val in elements:
+        if kind == "para":
+            clean, pn = _strip_pn(val)
+            if not clean and not pn:
+                continue
+
+            m = Q_CODE_RE.match(clean) if clean else None
+            if m:
+                # Flush previous question
+                _flush_question(current_q, text_buf,
+                                table_info_for_current if had_table else None)
+
+                code = m.group(1).upper()
+                text = m.group(2).strip()
+                text, pn2 = _strip_pn(text)
+
+                current_q = {
+                    "code": code,
+                    "full_code": code,
+                    "question": text,
+                    "pn_notes": (pn + " " + pn2).strip(),
+                }
+                text_buf = []
+                had_table = False
+                table_info_for_current = None
+            elif current_q:
+                # Accumulate PN notes
+                if pn:
+                    current_q["pn_notes"] = (
+                        current_q.get("pn_notes", "") + " " + pn
+                    ).strip()
+                if clean:
+                    if had_table:
+                        # After a table, paragraphs go to NEXT question's buffer
+                        # — but since no new Q_CODE yet, we start a fresh buffer
+                        # for when the next question eventually starts.
+                        # Actually, these paragraphs just get buffered and will
+                        # be part of the next question once it starts. For now
+                        # we still append to text_buf which will be flushed when
+                        # the next Q_CODE is seen; they'll go into the no-table
+                        # path for the NEXT question. But current_q already has
+                        # its table info. So we need to flush current_q first.
+                        _flush_question(current_q, text_buf,
+                                        table_info_for_current)
+                        current_q = None
+                        had_table = False
+                        table_info_for_current = None
+                        text_buf = [clean]
+                    else:
+                        text_buf.append(clean)
+
+        elif kind == "table":
+            if current_q and not had_table:
+                table_info_for_current = _parse_table_for_options(val)
+                had_table = True
+            # Tables without a current question are ignored
+
+    # Flush last question
+    _flush_question(current_q, text_buf,
+                    table_info_for_current if had_table else None)
+
+    # Deduplicate by code (keep last occurrence)
+    seen = {}
+    for q in questions:
+        seen[q["code"]] = q
+    return list(seen.values())
 
 
 def _parse_pdf(path: Path) -> list[str]:
@@ -216,9 +399,11 @@ def parse_questionnaire(path) -> list[dict]:
     path = Path(path)
     ext  = path.suffix.lower()
 
+    # docx uses its own structured parser that returns list[dict] directly
     if ext == ".docx":
-        lines = _parse_docx(path)
-    elif ext == ".pdf":
+        return _parse_docx(path)
+
+    if ext == ".pdf":
         lines = _parse_pdf(path)
     elif ext in (".xlsx", ".xls"):
         lines = _parse_excel(path)
@@ -263,13 +448,16 @@ def parse_questionnaire(path) -> list[dict]:
             if pn and not clean:
                 current_q["pn_notes"] = (current_q.get("pn_notes", "") + " " + pn).strip()
             elif clean:
-                # Heuristic: short lines after a question are likely options
-                if len(clean) < 120 and not clean.startswith("Please") \
+                # Table-header-like lines are silently skipped
+                if TABLE_HEADER_RE.match(clean):
+                    pass
+                # Everything else after a question becomes an option —
+                # no length limit since options can be complete sentences
+                elif not clean.startswith("Please") \
                         and not clean.startswith("Your answers") \
                         and not SECTION_RE.match(clean):
                     option_buf.append(clean)
                 else:
-                    # Append to question text
                     current_q["question"] += " " + clean
                 if pn:
                     current_q["pn_notes"] = (current_q.get("pn_notes", "") + " " + pn).strip()

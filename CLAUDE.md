@@ -39,7 +39,7 @@ dash_app/
     col_mapper.py     # Groups dataset columns by prefix, suggests var types
   assets/style.css    # All custom CSS
 update_log.py         # Run this after every session to log changes to NN_Design_Tracker.xlsx
-NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 17
+NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 20
 ```
 
 ## Architecture decisions
@@ -63,13 +63,18 @@ NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 17
 - Unassigned options pool row shown at bottom of each table when options remain unmatched
 - "Save changes" button → clientside_callback reads DOM chip positions → vm-drag-assignments store → handle_save server callback
 - `vm-state` uses `storage_type="session"` so assignments persist across page navigation
-- `qnr_parser._parse_docx` reads docx in document order (paragraphs + tables interleaved)
+- `qnr_parser._parse_docx` returns `list[dict]` directly (two-pass: collect elements → group into questions)
+- Table path: all paragraphs before table → question text; table first-col only → options
+- No-table path: all paragraphs except last → question text; last → single option
+- `_parse_table_for_options`: skips merged rows (vMerge continuation, gridSpan>1, single-cell disclaimer), reads col 0 only, stores `table_col_headers` + `table_n_cols`
+- Grid-prefix expansion in `_default_option_assignments`: if n_vars ≈ n_opts × (n_table_cols-1) ±10%, expands options as "col_header opt" assigned 1:1 to matched cols
 
-## Current state (last updated 2026-04-10, session 18)
+## Current state (last updated 2026-04-17, session 19)
+- qnr_parser._parse_docx fully rewritten: proper merge detection, table-path/no-table-path logic, grid-prefix expansion
+- Bug fixed: pre-table paragraphs were lost when a post-table paragraph appeared before the next Q_CODE (flush called with [] instead of text_buf)
 - Variable Mapping page: table layout per question, draggable option chips, auto-assignment, Save button
 - Stage 0: duplicate s0-upload-status ID fixed; page now re-renders immediately after upload (app-state as Input to render_page)
 - app.py render_page: app-state changed from State to Input so all pages re-render on state change
-- QC fixes: stage0 duplicate ID, var_mapping save-state bugs, vm-state session persistence
 - Stages 1–9: inherited from original Streamlit rewrite, not yet re-tested end-to-end
 
 ## Open tasks
