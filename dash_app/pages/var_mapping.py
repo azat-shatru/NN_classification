@@ -17,7 +17,8 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server_store
 from utils.qnr_parser import parse_questionnaire
-from utils.col_mapper import group_columns, suggest_var_type
+from utils.col_mapper import (group_columns, suggest_var_type,
+                               parse_excel_metadata, build_questions_from_metadata)
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
@@ -697,7 +698,14 @@ def upload_data(contents, filename, state):
     if not contents:
         return no_update, no_update
     try:
-        df = _decode_df(contents, filename)
+        _, content_string = contents.split(",")
+        decoded = base64.b64decode(content_string)
+
+        if filename.lower().endswith(".csv"):
+            df = pd.read_csv(io.StringIO(decoded.decode("utf-8", errors="replace")))
+        else:
+            df = pd.read_excel(io.BytesIO(decoded))
+
         server_store.set_df("raw_df", df.copy())
         server_store.set_df("df",     df.copy())
         state = dict(state or {})
@@ -708,11 +716,30 @@ def upload_data(contents, filename, state):
         state["numeric_cols"]     = [c for c in feature_cols if c in auto_num]
         state["categorical_cols"] = [c for c in feature_cols if c not in auto_num]
         state["ordinal_cols"]     = []
-        if server_store.get_val("qnr_questions"):
+
+        # ── Auto-build questions from Excel metadata sheets ───────────────────
+        meta_msg = ""
+        if filename.lower().endswith((".xlsx", ".xls")):
+            import io as _io
+            meta = parse_excel_metadata(_io.BytesIO(decoded))
+            if meta["has_metadata"]:
+                col_groups = group_columns(df)
+                questions  = build_questions_from_metadata(
+                    meta["var_labels"], meta["value_labels"], col_groups
+                )
+                server_store.set_val("qnr_questions", questions)
+                server_store.set_val("excel_metadata", meta)
+                state["mapping_done"] = True
+                meta_msg = (f"  ·  Auto-mapped {len(questions)} questions "
+                            f"from Excel metadata sheets.")
+
+        if not meta_msg and server_store.get_val("qnr_questions"):
             state["mapping_done"] = True
+
         return (
             dbc.Alert(
-                f"Loaded {df.shape[0]:,} rows × {df.shape[1]} columns from '{filename}'",
+                f"Loaded {df.shape[0]:,} rows × {df.shape[1]} columns "
+                f"from '{filename}'{meta_msg}",
                 color="success", dismissable=True,
             ),
             state,

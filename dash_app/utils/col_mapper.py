@@ -14,6 +14,9 @@ from collections import defaultdict
 # Matches question prefix: S1, A6, B1a, D7a etc.
 PREFIX_RE = re.compile(r'^([A-Za-z]\d+[a-z]?)', re.IGNORECASE)
 
+# Strips leading "CODE - " from variable label strings
+_CODE_STRIP_RE = re.compile(r'^[A-Za-z]\d+[a-z]?\s*[-–]\s*', re.IGNORECASE)
+
 _CHART_OPTIONS = {
     "categorical": ["Bar chart", "Pie chart", "Donut chart"],
     "ordinal":     ["Bar chart", "Horizontal bar", "Stacked bar", "Line chart"],
@@ -181,3 +184,138 @@ def build_codebook(df: pd.DataFrame, parsed_questions: list) -> list:
         })
 
     return codebook
+
+
+# ── Excel metadata parsing ─────────────────────────────────────────────────────
+
+def parse_excel_metadata(source) -> dict:
+    """
+    Read 'Variable Label Information' and 'Value Label Information' sheets
+    from a data Excel file (accepts file path or BytesIO).
+
+    Returns:
+        {
+            "var_labels":   {col_name: label_text},          # every column
+            "value_labels": {col_name: {value: label_str}},  # coded columns
+            "has_metadata": bool,
+        }
+    """
+    import openpyxl
+
+    try:
+        wb = openpyxl.load_workbook(source, read_only=True, data_only=True)
+    except Exception:
+        return {"var_labels": {}, "value_labels": {}, "has_metadata": False}
+
+    sheet_names = wb.sheetnames
+    has_var  = "Variable Label Information" in sheet_names
+    has_val  = "Value Label Information"    in sheet_names
+
+    if not has_var and not has_val:
+        return {"var_labels": {}, "value_labels": {}, "has_metadata": False}
+
+    var_labels: dict   = {}
+    value_labels: dict = {}
+
+    if has_var:
+        ws = wb["Variable Label Information"]
+        for row in ws.iter_rows(values_only=True, min_row=2):
+            if row and row[0] and row[4] is not None:
+                var_labels[str(row[0]).strip()] = str(row[4]).strip()
+
+    if has_val:
+        ws = wb["Value Label Information"]
+        current_var = None
+        for row in ws.iter_rows(values_only=True, min_row=2):
+            if not row:
+                continue
+            var_name, value, label = row[0], row[1], row[2]
+            if var_name:
+                current_var = str(var_name).strip()
+            if current_var and value is not None and label is not None:
+                value_labels.setdefault(current_var, {})[value] = str(label).strip()
+
+    return {"var_labels": var_labels, "value_labels": value_labels, "has_metadata": True}
+
+
+def _vl_sort_key(item):
+    v = item[0]
+    if isinstance(v, (int, float)):
+        return (0, float(v))
+    return (1, str(v))
+
+
+def build_questions_from_metadata(var_labels: dict, value_labels: dict,
+                                   col_groups: dict) -> list:
+    """
+    Build question dicts (same format as qnr_parser output) from Excel metadata.
+
+    Logic per group type:
+      single   → options come from value_labels of the primary column (sorted by value)
+      multi    → options come from stripped var_labels of each column (1 chip per col)
+      grid     → same as multi
+      multi_col → same as multi
+    """
+    questions = []
+
+    for prefix, grp in col_groups.items():
+        cols       = grp["cols"]
+        primary    = grp["primary"]
+        group_type = grp["group_type"]
+
+        # ── Question text ─────────────────────────────────────────────────────
+        raw_label = var_labels.get(primary, "")
+        q_text    = _CODE_STRIP_RE.sub("", raw_label).strip() or prefix
+
+        # ── Options ───────────────────────────────────────────────────────────
+        if group_type == "single":
+            vl      = value_labels.get(primary, {})
+            options = [lbl for _, lbl in sorted(vl.items(), key=_vl_sort_key)]
+        else:
+            # Multi-column: one chip per column from the column's own label
+            seen    = set()
+            options = []
+            for col in cols:
+                lbl      = var_labels.get(col, "")
+                stripped = _CODE_STRIP_RE.sub("", lbl).strip()
+                if stripped and stripped not in seen:
+                    options.append(stripped)
+                    seen.add(stripped)
+
+        # ── Type inference ────────────────────────────────────────────────────
+        if group_type == "grid":
+            q_type = "grid"
+        elif group_type in ("multi", "multi_col"):
+            q_type = "multi"
+        elif not options:
+            q_type = "numeric"
+        else:
+            vl   = value_labels.get(primary, {})
+            vals = set(vl.keys())
+            n    = len(options)
+            if n <= 2:
+                q_type = "single"
+            elif n <= 7 and vals and all(isinstance(v, (int, float)) for v in vals):
+                int_vals = {int(v) for v in vals}
+                if int_vals <= {1, 2, 3, 4, 5, 6, 7}:
+                    q_type = f"scale_{n}"
+                else:
+                    q_type = "ordinal"
+            elif n <= 15:
+                q_type = "ordinal"
+            else:
+                q_type = "categorical"
+
+        questions.append({
+            "code":         prefix,
+            "full_code":    prefix,
+            "question":     q_text,
+            "q_type":       q_type,
+            "options":      options,
+            "pn_notes":     "",
+            "scale_low":    "",
+            "scale_high":   "",
+            "scale_points": None,
+        })
+
+    return questions
