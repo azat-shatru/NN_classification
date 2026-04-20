@@ -8,8 +8,11 @@ Handles:
 """
 
 import re
+import logging
 import pandas as pd
 from collections import defaultdict
+
+log = logging.getLogger("col_mapper")
 
 # Matches question prefix: S1, A6, B1a, D7a etc.
 PREFIX_RE = re.compile(r'^([A-Za-z]\d+[a-z]?)', re.IGNORECASE)
@@ -193,9 +196,13 @@ def parse_excel_metadata(source) -> dict:
     Read 'Variable Label Information' and 'Value Label Information' sheets
     from a data Excel file (accepts file path or BytesIO).
 
+    Variable Label Information columns:
+      A = variable name, B = variable type, E = label text
+
     Returns:
         {
-            "var_labels":   {col_name: label_text},          # every column
+            "var_labels":   {col_name: label_text},          # col E
+            "var_types":    {col_name: type_str},            # col B
             "value_labels": {col_name: {value: label_str}},  # coded columns
             "has_metadata": bool,
         }
@@ -205,37 +212,55 @@ def parse_excel_metadata(source) -> dict:
     try:
         wb = openpyxl.load_workbook(source, read_only=True, data_only=True)
     except Exception:
-        return {"var_labels": {}, "value_labels": {}, "has_metadata": False}
+        return {"var_labels": {}, "var_types": {}, "value_labels": {}, "has_metadata": False}
 
-    sheet_names = wb.sheetnames
-    has_var  = "Variable Label Information" in sheet_names
-    has_val  = "Value Label Information"    in sheet_names
+    # Case-insensitive sheet name lookup
+    sheet_lower = {s.lower(): s for s in wb.sheetnames}
+    var_sheet_key = next(
+        (k for k in sheet_lower if "variable" in k and "label" in k), None
+    )
+    val_sheet_key = next(
+        (k for k in sheet_lower if "value" in k and "label" in k), None
+    )
 
-    if not has_var and not has_val:
-        return {"var_labels": {}, "value_labels": {}, "has_metadata": False}
+    if not var_sheet_key and not val_sheet_key:
+        return {"var_labels": {}, "var_types": {}, "value_labels": {}, "has_metadata": False}
 
-    var_labels: dict   = {}
+    var_labels: dict  = {}
+    var_types: dict   = {}
     value_labels: dict = {}
 
-    if has_var:
-        ws = wb["Variable Label Information"]
+    if var_sheet_key:
+        ws = wb[sheet_lower[var_sheet_key]]
         for row in ws.iter_rows(values_only=True, min_row=2):
-            if row and row[0] and row[4] is not None:
-                var_labels[str(row[0]).strip()] = str(row[4]).strip()
+            if not row or not row[0]:
+                continue
+            var_name = str(row[0]).strip()
+            # col B (index 1) = variable type
+            if len(row) > 1 and row[1] is not None:
+                var_types[var_name] = str(row[1]).strip()
+            # col E (index 4) = label text
+            if len(row) > 4 and row[4] is not None:
+                var_labels[var_name] = str(row[4]).strip()
 
-    if has_val:
-        ws = wb["Value Label Information"]
+    if val_sheet_key:
+        ws = wb[sheet_lower[val_sheet_key]]
         current_var = None
         for row in ws.iter_rows(values_only=True, min_row=2):
             if not row:
                 continue
-            var_name, value, label = row[0], row[1], row[2]
+            var_name, value, label = row[0], row[1], row[2] if len(row) > 2 else None
             if var_name:
                 current_var = str(var_name).strip()
             if current_var and value is not None and label is not None:
                 value_labels.setdefault(current_var, {})[value] = str(label).strip()
 
-    return {"var_labels": var_labels, "value_labels": value_labels, "has_metadata": True}
+    return {
+        "var_labels":   var_labels,
+        "var_types":    var_types,
+        "value_labels": value_labels,
+        "has_metadata": True,
+    }
 
 
 def _vl_sort_key(item):
@@ -243,6 +268,407 @@ def _vl_sort_key(item):
     if isinstance(v, (int, float)):
         return (0, float(v))
     return (1, str(v))
+
+
+def _col_b_to_var_type(raw: str) -> str:
+    """Map raw col-B type string to one of our canonical var-type keys."""
+    if not raw:
+        return ""
+    s = raw.lower().strip()
+    if "numeric" in s or "integer" in s or "float" in s or "double" in s:
+        return "numeric"
+    if "string" in s or "char" in s or "text" in s or "open" in s:
+        return "open"
+    if "ordinal" in s:
+        return "ordinal"
+    if "scale" in s:
+        if "7" in s:
+            return "scale_7"
+        if "5" in s:
+            return "scale_5"
+        return "ordinal"
+    if "multi" in s or "multiple" in s:
+        return "multi"
+    if "grid" in s or "matrix" in s:
+        return "grid"
+    if "categ" in s or "nominal" in s or "single" in s:
+        return "categorical"
+    return ""
+
+
+def _norm_text(s: str) -> str:
+    """Normalize option / label text for comparison."""
+    if not s:
+        return ""
+    s = _CODE_STRIP_RE.sub("", str(s))
+    # remove non-alphanum aside from spaces; collapse whitespace; lowercase
+    s = re.sub(r"[\s_]+", " ", s.lower())
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _overlap_score(a_norm: str, b_norm: str) -> float:
+    """
+    Return a loose overlap score between two normalized strings.
+    1.0 if substring containment; otherwise fraction of shared words
+    over the smaller bag of words.
+    """
+    if not a_norm or not b_norm:
+        return 0.0
+    if a_norm == b_norm or a_norm in b_norm or b_norm in a_norm:
+        return 1.0
+    wa = set(a_norm.split())
+    wb = set(b_norm.split())
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / min(len(wa), len(wb))
+
+
+def _best_qnr_match(ce_norm: str, qnr_norms: list, qnr_opts: list,
+                    threshold: float = 0.4):
+    """
+    Return (best_qnr_opt, best_score) or (None, 0.0).
+    `qnr_norms` is pre-normalized QNR options list (same length as qnr_opts).
+    """
+    if not ce_norm or not qnr_opts:
+        return None, 0.0
+    best_opt, best_score = None, 0.0
+    for opt, norm_o in zip(qnr_opts, qnr_norms):
+        score = _overlap_score(ce_norm, norm_o)
+        if score > best_score:
+            best_score, best_opt = score, opt
+        if score >= 1.0:
+            return opt, score
+    if best_score >= threshold:
+        return best_opt, best_score
+    return None, best_score
+
+
+def _infer_col_headers_from_suffixes(code: str, cols: list, n_opts: int) -> list:
+    """
+    When QNR `table_col_headers` is empty but we can detect a grid-like
+    ratio, try to derive column headers from the dataset column suffixes.
+
+    Strategy: strip the question prefix from each col, then find the
+    *second* varying token (the first token usually indexes the option).
+    Returns the ordered unique inferred headers, or [] if none found.
+    """
+    if not cols or n_opts <= 0:
+        return []
+    if len(cols) % n_opts != 0:
+        return []
+    n_headers = len(cols) // n_opts
+    if n_headers <= 1:
+        return []
+
+    # Strip the question prefix from each column
+    prefix_re = re.compile(
+        r"^" + re.escape(code) + r"[_-]?", re.IGNORECASE
+    )
+    suffixes = [prefix_re.sub("", c) for c in cols]
+
+    # Split on _ or -
+    parts = [re.split(r"[_\-]", s) for s in suffixes]
+
+    # Pick the first token position that has exactly n_headers unique values
+    for pos in range(max((len(p) for p in parts), default=0)):
+        seen = []
+        for p in parts:
+            if pos < len(p):
+                tok = p[pos]
+                if tok not in seen:
+                    seen.append(tok)
+        if len(seen) == n_headers:
+            return seen
+    return []
+
+
+def log_assignments(questions_enriched: list, col_groups: dict) -> None:
+    """
+    Emit a structured DEBUG-level log of how each question was resolved.
+    Each enriched question must carry `_mapping_source` and `col_assignments`
+    (annotations attached by merge_qnr_with_metadata).
+    """
+    for q in questions_enriched:
+        code   = q.get("code", "?")
+        q_type = q.get("q_type", "")
+        source = q.get("_mapping_source", "n/a")
+        warns  = q.get("_mapping_warnings", [])
+        assigns = q.get("col_assignments", {}) or {}
+
+        log.debug(
+            "── %s  q_type=%s  source=%s  n_opts=%d  n_cols=%d",
+            code, q_type, source,
+            len(q.get("options", [])),
+            len((col_groups.get(code) or {}).get("cols", [])),
+        )
+        for w in warns:
+            log.debug("   ! warning: %s", w)
+
+        # Per-column assignment line (truncated)
+        grp = col_groups.get(code) or {}
+        for col in grp.get("cols", []):
+            assigned = assigns.get(col)
+            if assigned:
+                shown = ", ".join(str(a)[:60] for a in assigned[:3])
+                if len(assigned) > 3:
+                    shown += f", … (+{len(assigned) - 3})"
+                log.debug("   %s → [%s]", col, shown)
+            else:
+                log.debug("   %s → UNASSIGNED", col)
+
+
+def merge_qnr_with_metadata(questions: list, meta: dict, col_groups: dict) -> list:
+    """
+    Enrich QNR-parsed questions with per-column option assignments using
+    Excel metadata (Variable Label Information sheet).
+
+    Logic per question:
+      1. Collect all dataset columns belonging to this question code.
+      2. Pull col-E (label) and col-B (type) text for each column.
+      3. Determine the canonical option set:
+           · If ≥1 overlap between QNR options and col-E labels → INTERSECTION
+             (keep only QNR options that match ≥1 col-E label; QNR text is
+             the canonical string).
+           · Else → QNR options only (QNR is ground truth).
+           · If no QNR options at all → use unique cleaned col-E labels.
+      4. Grid expansion: when n_cols == n_options * (n_extra_table_cols),
+         expand each QNR option as "{col_header} {opt}" and assign
+         sequentially. If table_col_headers is empty, try to infer headers
+         from the column name suffixes.
+      5. Overassignment safety: any column still without an assignment gets
+         a positional-suffix match or, as last resort, all final options.
+      6. Meta var type is mapped from col-B via _col_b_to_var_type.
+
+    Every dataset column belonging to a known question ends up with a
+    non-empty entry in q["col_assignments"].
+    """
+    var_labels = meta.get("var_labels", {}) if meta else {}
+    var_types  = meta.get("var_types",  {}) if meta else {}
+
+    enriched: list = []
+
+    for q in questions:
+        code     = q["code"].upper()
+        grp      = col_groups.get(code)
+        qnr_opts = list(q.get("options", []))
+
+        if not grp:
+            enriched.append(q)
+            continue
+
+        cols: list = list(grp["cols"])
+        warnings: list = []
+
+        # ── Step 1: gather col-E labels per column ───────────────────────────
+        col_e_raw: dict = {}          # col → raw label from col E
+        col_e_clean: dict = {}        # col → "CODE - "-stripped label
+        for col in cols:
+            raw = var_labels.get(col, "")
+            if raw:
+                col_e_raw[col] = raw
+                col_e_clean[col] = _CODE_STRIP_RE.sub("", raw).strip()
+
+        qnr_norms   = [_norm_text(o) for o in qnr_opts]
+        ce_pairs    = [(c, col_e_clean[c]) for c in cols if col_e_clean.get(c)]
+        ce_norms    = [_norm_text(t) for _, t in ce_pairs]
+
+        # ── Step 2: determine whether QNR ↔ col-E sets overlap ───────────────
+        any_overlap = False
+        if qnr_opts and ce_pairs:
+            for cen in ce_norms:
+                for qn_ in qnr_norms:
+                    if _overlap_score(cen, qn_) >= 0.4:
+                        any_overlap = True
+                        break
+                if any_overlap:
+                    break
+
+        # ── Step 3: choose the canonical option set ──────────────────────────
+        # Strategy controls the option pool; canonical text is ALWAYS the QNR
+        # wording when available (more descriptive than col-E).
+        used_qnr_idx: set = set()       # QNR options that matched something
+        col_to_qnr: dict  = {}          # col → QNR option text (via col-E match)
+
+        if qnr_opts and ce_pairs and any_overlap:
+            # Intersection: for each col, find best QNR option via col-E
+            for (col, ce_text), ce_norm in zip(ce_pairs, ce_norms):
+                m_opt, score = _best_qnr_match(ce_norm, qnr_norms, qnr_opts)
+                if m_opt is not None:
+                    col_to_qnr[col] = m_opt
+                    used_qnr_idx.add(qnr_opts.index(m_opt))
+            # canonical option set = QNR options that had at least one col-E match,
+            # order preserved from QNR
+            intersection_opts = [
+                o for i, o in enumerate(qnr_opts) if i in used_qnr_idx
+            ]
+            # If intersection drops too many options (less than a third),
+            # fall back to full QNR list so nothing disappears from the UI.
+            if len(intersection_opts) >= max(1, len(qnr_opts) // 3):
+                final_opts = intersection_opts
+                source = "intersection"
+                if len(intersection_opts) < len(qnr_opts):
+                    warnings.append(
+                        f"intersection kept {len(intersection_opts)}/{len(qnr_opts)} "
+                        "QNR options"
+                    )
+            else:
+                final_opts = list(qnr_opts)
+                source = "qnr_only"
+                warnings.append(
+                    f"intersection kept only {len(intersection_opts)}/{len(qnr_opts)} "
+                    "opts — falling back to full QNR option set"
+                )
+        elif qnr_opts:
+            final_opts = list(qnr_opts)
+            source = "qnr_only"
+            if ce_pairs and not any_overlap:
+                warnings.append(
+                    "col_e labels found but no overlap with QNR — using QNR only"
+                )
+        elif ce_pairs:
+            # No QNR options; derive unique cleaned col-E labels
+            seen, final_opts = set(), []
+            for _, ce_text in ce_pairs:
+                if ce_text and ce_text not in seen:
+                    seen.add(ce_text)
+                    final_opts.append(ce_text)
+            source = "col_e_only"
+        else:
+            final_opts = []
+            source = "empty"
+
+        # ── Step 4: grid expansion detection ─────────────────────────────────
+        n_vars      = len(cols)
+        n_opts      = len(final_opts)
+        table_n_cols = int(q.get("table_n_cols", 1) or 1)
+        headers_raw  = list(q.get("table_col_headers", []) or [])
+        # Strip empty column headers and the first (variable name) column header
+        col_headers = [h for h in headers_raw if h and h.strip()]
+
+        expanded_opts: list = []
+        grid_expanded = False
+
+        if n_opts > 0 and n_vars > 0:
+            # Case A: QNR gave us table_col_headers and arithmetic matches
+            if col_headers and n_vars == n_opts * len(col_headers):
+                expanded_opts = [
+                    f"{ch.strip()} {opt}".strip()
+                    for opt in final_opts
+                    for ch in col_headers
+                ]
+                grid_expanded = True
+            # Case B: no headers but n_vars is a clean multiple of n_opts → infer
+            elif (not col_headers
+                  and n_vars > n_opts
+                  and n_vars % n_opts == 0):
+                inferred = _infer_col_headers_from_suffixes(
+                    code, cols, n_opts
+                )
+                if inferred:
+                    col_headers = inferred
+                    expanded_opts = [
+                        f"{ch.strip()} {opt}".strip()
+                        for opt in final_opts
+                        for ch in col_headers
+                    ]
+                    grid_expanded = True
+                    warnings.append(
+                        f"inferred {len(inferred)} col headers from suffixes: "
+                        f"{inferred}"
+                    )
+            # Case C: legacy pattern using table_n_cols
+            elif (table_n_cols > 2
+                  and col_headers
+                  and n_vars == n_opts * (table_n_cols - 1)):
+                # only the non-variable columns contribute headers
+                hdrs = col_headers[-(table_n_cols - 1):]
+                expanded_opts = [
+                    f"{ch.strip()} {opt}".strip()
+                    for opt in final_opts
+                    for ch in hdrs
+                ]
+                grid_expanded = True
+
+        # ── Step 5: build col_assignments for every column ───────────────────
+        col_assignments: dict = {}
+
+        if grid_expanded and expanded_opts:
+            # Sequential assignment of expanded options
+            for i, col in enumerate(cols):
+                if i < len(expanded_opts):
+                    col_assignments[col] = [expanded_opts[i]]
+            # Use the expanded set as the question's option set so the UI
+            # shows them as separate chips
+            final_opts = expanded_opts
+            source = "grid_expansion"
+        else:
+            # Non-grid: first try col-E → QNR mapping
+            for col in cols:
+                if col in col_to_qnr:
+                    col_assignments[col] = [col_to_qnr[col]]
+
+            # Remaining columns with col-E but no QNR match → use cleaned label
+            for col in cols:
+                if col in col_assignments:
+                    continue
+                ce = col_e_clean.get(col, "")
+                if ce and source in ("col_e_only",):
+                    col_assignments[col] = [ce]
+
+        # ── Step 6: overassignment safety — no column left blank ─────────────
+        for col in cols:
+            if col_assignments.get(col):
+                continue
+            # positional suffix: _1 → opts[0], _2 → opts[1] …
+            placed = False
+            m_num = re.search(r"[_\-](\d+)(?:[_\-]\d+)?$", col)
+            m_let = re.search(r"[A-Z]\d+([a-z])$", col, re.IGNORECASE)
+            if m_num and final_opts:
+                idx = int(m_num.group(1)) - 1
+                if 0 <= idx < len(final_opts):
+                    col_assignments[col] = [final_opts[idx]]
+                    placed = True
+            if not placed and m_let and final_opts:
+                idx = ord(m_let.group(1).lower()) - ord("a")
+                if 0 <= idx < len(final_opts):
+                    col_assignments[col] = [final_opts[idx]]
+                    placed = True
+            if not placed:
+                # overassign all options — better than leaving blank
+                if final_opts:
+                    col_assignments[col] = list(final_opts)
+                else:
+                    col_assignments[col] = []
+                warnings.append(
+                    f"{col}: no option match — overassigned "
+                    f"{len(final_opts)} opts as fallback"
+                )
+
+        # ── Step 7: build enriched question ──────────────────────────────────
+        q_new = dict(q)
+        q_new["options"]            = final_opts
+        q_new["col_assignments"]    = col_assignments
+        q_new["_mapping_source"]    = source
+        q_new["_mapping_warnings"]  = warnings
+        if grid_expanded:
+            q_new["table_col_headers"] = col_headers
+
+        # Var type from col B (primary column)
+        primary_type_raw = var_types.get(cols[0], "") if cols else ""
+        mapped_type      = _col_b_to_var_type(primary_type_raw)
+        if mapped_type:
+            q_new["meta_var_type"] = mapped_type
+
+        enriched.append(q_new)
+
+    # Debug log for the whole batch
+    try:
+        log_assignments(enriched, col_groups)
+    except Exception as e:  # never break the pipeline on logging
+        log.debug("log_assignments failed: %s", e)
+
+    return enriched
 
 
 def build_questions_from_metadata(var_labels: dict, value_labels: dict,

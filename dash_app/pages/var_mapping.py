@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server_store
 from utils.qnr_parser import parse_questionnaire
 from utils.col_mapper import (group_columns, suggest_var_type,
-                               parse_excel_metadata, build_questions_from_metadata)
+                               parse_excel_metadata, build_questions_from_metadata,
+                               merge_qnr_with_metadata)
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
@@ -85,14 +86,18 @@ def _tooltip_content(col: str, df: pd.DataFrame) -> list:
 
 def _default_option_assignments(df: pd.DataFrame, groups: list) -> dict:
     """
-    Auto-assign questionnaire options to dataset columns using structural cues.
+    Auto-assign questionnaire options to dataset columns.
 
-    Rules (priority order):
-      scale_* / numeric  → skip  (scale label shown, not chips)
-      1 col per question → all options  (column stores the answer code)
-      multi q_type, N cols → numeric suffix _1/_2 or letter a/b → opts[i]
-      grid, N cols       → all options per col (same scale, different row item)
-      other multi-col    → all options per col  (safe fallback)
+    Priority:
+      1. col_assignments from Excel metadata merge (merge_qnr_with_metadata)
+      2. Single-col question → all options
+      3. multi q_type → numeric/letter suffix index
+      4. grid/other → sequential 1-per-col
+      5. Grid-prefix expansion (table column headers × options)
+      6. Final safety pass: any column with no entry gets list(opts)
+
+    Overassignment policy: unresolvable columns receive ALL question options
+    rather than being left blank.
     """
     defaults: dict = {}
 
@@ -103,23 +108,35 @@ def _default_option_assignments(df: pd.DataFrame, groups: list) -> dict:
         opts   = q.get("options", [])
         q_type = q.get("q_type", "single")
 
+        all_cols = grp["matched_cols"] + grp["possibly_related"] + grp["extra_cols"]
+        if not all_cols:
+            continue
+
+        # ── 1. Excel metadata per-column assignments ──────────────────────────
+        col_assigns = q.get("col_assignments", {})
+        if col_assigns:
+            for col in all_cols:
+                assignment = col_assigns.get(col)
+                if assignment:
+                    defaults[col] = list(assignment)
+                else:
+                    # Column has no specific assignment → overassign all opts
+                    defaults[col] = list(opts)
+            continue
+
+        # Scale / numeric questions: no option chips by design
         if q_type.startswith("scale_") or q_type == "numeric":
             continue
         if not opts:
             continue
 
-        all_cols = grp["matched_cols"] + grp["possibly_related"] + grp["extra_cols"]
-        if not all_cols:
-            continue
-
+        # ── 2. Structural fallback ────────────────────────────────────────────
         if len(all_cols) == 1:
             defaults[all_cols[0]] = list(opts)
 
         elif q_type == "multi":
             for col in all_cols:
-                # numeric suffix: A3_1 → idx 0,  A3_2 → idx 1
                 m_num = re.search(r'[_\-](\d+)$', col)
-                # letter suffix: A3a → idx 0,  A3b → idx 1
                 m_let = re.search(r'[A-Z]\d+([a-z])$', col, re.IGNORECASE)
                 if m_num:
                     idx = int(m_num.group(1)) - 1
@@ -131,44 +148,55 @@ def _default_option_assignments(df: pd.DataFrame, groups: list) -> dict:
                     if 0 <= idx < len(opts):
                         defaults[col] = [opts[idx]]
                         continue
-                # No suffix match — leave unassigned (user assigns manually)
+                # No suffix match → overassign all opts
+                defaults[col] = list(opts)
 
         else:
-            # grid or other multi-col: assign 1 option per column in order.
-            # Extra options that exceed number of columns stay in the pool.
+            # grid or other multi-col: sequential 1-per-col; overflow → all opts
             for i, col in enumerate(all_cols):
-                if i < len(opts):
-                    defaults[col] = [opts[i]]
+                defaults[col] = [opts[i]] if i < len(opts) else list(opts)
 
     # ── Grid-prefix expansion: expand options × table column headers ─────────
+    # (Only runs when col_assignments didn't handle it.)
     for grp in groups:
         q = grp["question"]
         if not q:
             continue
-        if q.get("table_n_cols", 1) <= 2 or not q.get("table_col_headers"):
+        if q.get("col_assignments"):
+            continue  # already handled above
+
+        n_opts       = len(q.get("options", []))
+        table_n_cols = q.get("table_n_cols", 1) or 1
+        col_headers  = [h for h in (q.get("table_col_headers") or []) if h and h.strip()]
+        all_cols     = grp["matched_cols"] + grp["extra_cols"]
+        n_vars       = len(all_cols)
+
+        if not col_headers or n_opts <= 0 or n_vars <= 0:
             continue
 
-        n_opts = len(q.get("options", []))
-        n_extra_cols = q["table_n_cols"] - 1   # columns 2+
-        col_headers = q["table_col_headers"]    # list of n_extra_cols strings
-        all_cols = grp["matched_cols"] + grp["extra_cols"]  # NOT possibly_related
-        n_vars = len(all_cols)
+        # Fire when either: table_n_cols > 2 AND count matches (table_n_cols-1),
+        # OR col_headers length matches the n_vars / n_opts ratio directly.
+        n_extra_cols = table_n_cols - 1 if table_n_cols > 2 else len(col_headers)
+        expected     = n_opts * n_extra_cols
+        tolerance    = max(1, round(expected * 0.1))
+        if abs(n_vars - expected) <= tolerance and n_extra_cols >= 1:
+            hdrs = col_headers[-n_extra_cols:] if len(col_headers) >= n_extra_cols else col_headers
+            expanded_opts = [f"{ch} {opt}" for opt in q["options"] for ch in hdrs]
+            for i, col in enumerate(all_cols):
+                defaults[col] = [expanded_opts[i]] if i < len(expanded_opts) else list(q["options"])
 
-        if n_vars > 0 and n_opts > 0 and abs(n_vars - n_opts * n_extra_cols) <= max(1, round(n_opts * n_extra_cols * 0.1)):
-            # Expand: for each opt, for each col_header → "col_header opt"
-            expanded_opts = []
-            for opt in q["options"]:
-                for ch in col_headers:
-                    expanded_opts.append(f"{ch} {opt}")
-
-            if len(expanded_opts) == n_vars:
-                for i, col in enumerate(all_cols):
-                    defaults[col] = [expanded_opts[i]]
-            else:
-                # Assign as many as fit
-                for i, col in enumerate(all_cols):
-                    if i < len(expanded_opts):
-                        defaults[col] = [expanded_opts[i]]
+    # ── Final safety pass: no column left blank ──────────────────────────────
+    for grp in groups:
+        q = grp["question"]
+        if not q:
+            continue
+        opts = q.get("options", [])
+        if not opts:
+            continue
+        all_cols = grp["matched_cols"] + grp["possibly_related"] + grp["extra_cols"]
+        for col in all_cols:
+            if col not in defaults or not defaults[col]:
+                defaults[col] = list(opts)
 
     return defaults
 
@@ -371,9 +399,12 @@ def _render_var_table(
        **{"data-qcode": safe_code})
 
     rows = []
+    meta_var_type = (q.get("meta_var_type", "") if q else "") or ""
+
     for col, is_possibly, is_extra in col_roles:
-        col_type = type_overrides.get(col) or suggest_var_type(
-            df, [col], "single", q.get("q_type", "") if q else "")
+        col_type = (type_overrides.get(col)
+                    or meta_var_type
+                    or suggest_var_type(df, [col], "single", q.get("q_type", "") if q else ""))
 
         chips = [_chip(opt) for opt in opt_for(col)]
 
@@ -799,6 +830,12 @@ def refresh_mapping(app_state, vm_state):
     if not questions:
         return dbc.Alert("Raw data loaded. Upload the questionnaire file to see the mapping.",
                          color="info")
+
+    # Enrich questions with per-column assignments from Excel metadata
+    meta = server_store.get_val("excel_metadata")
+    if meta and meta.get("has_metadata"):
+        col_groups = group_columns(raw_df)
+        questions  = merge_qnr_with_metadata(questions, meta, col_groups)
 
     groups      = _build_groups(raw_df, questions, vm_state)
     def_assigns = _default_option_assignments(raw_df, groups)

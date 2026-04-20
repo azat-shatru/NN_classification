@@ -69,15 +69,27 @@ NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 20
 - `_parse_table_for_options`: skips merged rows (vMerge continuation, gridSpan>1, single-cell disclaimer), reads col 0 only, stores `table_col_headers` + `table_n_cols`
 - Grid-prefix expansion in `_default_option_assignments`: if n_vars ≈ n_opts × (n_table_cols-1) ±10%, expands options as "col_header opt" assigned 1:1 to matched cols
 
-## Current state (last updated 2026-04-17, session 19)
-- qnr_parser._parse_docx fully rewritten: proper merge detection, table-path/no-table-path logic, grid-prefix expansion
-- Bug fixed: pre-table paragraphs were lost when a post-table paragraph appeared before the next Q_CODE (flush called with [] instead of text_buf)
-- Variable Mapping page: table layout per question, draggable option chips, auto-assignment, Save button
-- Stage 0: duplicate s0-upload-status ID fixed; page now re-renders immediately after upload (app-state as Input to render_page)
-- app.py render_page: app-state changed from State to Input so all pages re-render on state change
+## Variable Mapping — option assignment details (session 21)
+- `merge_qnr_with_metadata(questions, meta, col_groups)` in col_mapper.py is the main enrichment step
+- **Option set rule**: if QNR options and col-E labels overlap (≥40% word match on any pair) → use INTERSECTION, QNR text canonical; if no overlap → QNR only
+- **Grid expansion**: fires when `n_matched_vars == n_options × n_col_headers`; headers from QNR `table_col_headers`, or inferred from variable name suffixes; assigns `"{col_header} {option}"` sequentially
+- **Zero unassigned guarantee**: suffix positional fallback (_1→opts[0]) then overassign all opts as last resort
+- **Col B (var type)**: read from "Variable Label Information" sheet, mapped to canonical type via `_col_b_to_var_type()`; shown as default in Type dropdown
+- **Debug logging**: `logging.getLogger("col_mapper")` at DEBUG level; per-question source + per-column assignment trace
+- Sheet name lookup is case-insensitive
+- `_mapping_source` field on enriched questions: `intersection` | `qnr_only` | `col_e_only` | `grid_expansion` | `n/a`
+
+## Current state (last updated 2026-04-20, session 21)
+- Var Mapping option assignment rewritten: intersection/QNR-only rule, grid expansion, zero-unassigned safety pass
+- parse_excel_metadata reads col B (var_types) in addition to col E (var_labels); case-insensitive sheet lookup
+- refresh_mapping calls merge_qnr_with_metadata when both QNR and Excel metadata loaded
+- Type dropdown prefers col-B type over heuristic inference
+- qnr_parser._parse_docx: proper merge detection, table-path/no-table-path logic, grid-prefix expansion
+- Stage 0: duplicate ID fixed; pages re-render on app-state change
 - Stages 1–9: inherited from original Streamlit rewrite, not yet re-tested end-to-end
 
 ## Open tasks
-- Test full pipeline end-to-end with MyRawdata.xlsx + survey.docx
+- S10B (and suffixed variants S10b_N_1) not parsed from QNR docx — parser stops at S10A; fix qnr_parser
+- Test full pipeline end-to-end with Raw data 2.xlsx + survey.docx
 - A7 value=8 (NEE) custom missing value handling (Stage 1)
 - Re-zip and upload to Google Drive

@@ -6,35 +6,39 @@ wb = openpyxl.load_workbook('NN_Design_Tracker.xlsx')
 ws = wb['Session Log']
 
 next_row = ws.max_row + 1
-next_session = 20
+next_session = 21
 
 decision_text = (
-    "Session 2026-04-17 — Excel metadata auto-mapping for Variable Mapping page. "
-    "Added two new functions to col_mapper.py: "
-    "(1) parse_excel_metadata(source): reads 'Variable Label Information' and "
-    "'Value Label Information' sheets from a data Excel file (accepts file path or BytesIO). "
-    "Returns var_labels dict {col_name: label_text} and value_labels dict "
-    "{col_name: {numeric_value: label_str}}. Returns has_metadata=False if sheets absent. "
-    "(2) build_questions_from_metadata(var_labels, value_labels, col_groups): builds question "
-    "dicts in the same format as qnr_parser output. Single-column groups: options come from "
-    "value_labels sorted by numeric key. Multi-column groups (multi/grid/multi_col): options "
-    "come from stripped var_labels of each column (one chip per column, 'CODE - ' prefix removed). "
-    "Type inferred from number of options and value key structure. "
-    "Also added _CODE_STRIP_RE regex and _vl_sort_key helper. "
-    "var_mapping.py upload_data callback updated: after loading the DataFrame, if file is xlsx/xls, "
-    "calls parse_excel_metadata on the raw decoded bytes (BytesIO). If has_metadata=True, "
-    "calls build_questions_from_metadata and stores result as qnr_questions in server_store, "
-    "sets mapping_done=True immediately (no separate QNR upload needed). "
-    "Status message appended with auto-mapped question count. "
-    "Raw data 2.xlsx pulled from git remote: has 703 var_labels, 375 value_labels, "
-    "builds 76 questions from 'Data with Values' sheet column groups."
+    "Session 2026-04-20 — Accurate variable-to-option assignment using Excel metadata + QNR. "
+    "col_mapper.py: parse_excel_metadata now reads col B (variable type) into var_types dict and "
+    "uses case-insensitive sheet name lookup. Added _col_b_to_var_type() helper mapping raw col-B "
+    "strings to canonical var-type keys. Added merge_qnr_with_metadata(questions, meta, col_groups) "
+    "as the central enrichment function. Logic: (1) for each question, collect col-E labels from "
+    "'Variable Label Information' sheet for all matched columns; (2) test for overlap between "
+    "QNR options and col-E labels using substring containment and word-overlap ratio >= 0.4; "
+    "(3) if overlap found → use INTERSECTION only, preserving QNR text as canonical (no duplicate "
+    "option versions); if no overlap → use QNR options only; (4) grid expansion fires when "
+    "n_matched_vars == n_options * n_col_headers, in three detection modes: QNR-provided "
+    "table_col_headers, headers inferred from variable name suffixes, legacy table_n_cols > 2; "
+    "expanded options formatted as '{col_header} {option}' assigned sequentially; (5) safety pass "
+    "ensures every column gets an assignment — suffix positional fallback (_1 → opts[0]) then "
+    "overassign all options if still unresolved; (6) annotates each enriched question with "
+    "_mapping_source and _mapping_warnings for auditability; (7) calls log_assignments() at DEBUG "
+    "level for per-column assignment tracing. "
+    "var_mapping.py: _default_option_assignments reordered so col_assignments branch runs before "
+    "scale/numeric short-circuit (metadata assignments survive for all q_types); grid expansion "
+    "block generalised to fire on col_headers length match, not just table_n_cols > 2; final "
+    "safety pass added after all loops to guarantee no column is left blank. refresh_mapping "
+    "callback now calls merge_qnr_with_metadata when both QNR and Excel metadata are loaded. "
+    "Type dropdown now prefers meta_var_type (col B) over heuristic suggest_var_type. "
+    "Test result: 351 columns enriched, 0 unassigned across all matched questions."
 )
 
 open_questions = (
-    "Test full pipeline end-to-end with Raw data 2.xlsx + Survey 2.docx. "
-    "A7 value=8 (NEE) custom missing handling still pending. "
-    "Type inference for single-col questions may misclassify categorical as scale_N "
-    "(e.g. S1 with 7 options → scale_7); user can override on mapping page. "
+    "S10B (and similar suffixed variants like S10b_N_1) not parsed from QNR docx — "
+    "parser stops at S10A; these fall back to Excel metadata only. QNR parser fix pending. "
+    "A7 value=8 (NEE) custom missing handling still pending (Stage 1). "
+    "Test full pipeline end-to-end with Raw data 2.xlsx + survey.docx. "
     "Re-zip and upload to Google Drive. "
     "Stages 1-9 inherited from Streamlit rewrite, not yet re-tested end-to-end."
 )
@@ -55,8 +59,8 @@ def copy_row_style(src_row_num, dst_row_num):
 copy_row_style(ws.max_row, next_row)
 
 ws.cell(row=next_row, column=1).value = next_session
-ws.cell(row=next_row, column=2).value = '2026-04-17 S20'
-ws.cell(row=next_row, column=3).value = 'Excel metadata auto-mapping: parse_excel_metadata + build_questions_from_metadata in col_mapper.py; upload_data auto-detects Variable/Value Label sheets'
+ws.cell(row=next_row, column=2).value = '2026-04-20 S21'
+ws.cell(row=next_row, column=3).value = 'Var Mapping: accurate option assignment via QNR+Excel merge — intersection rule, grid expansion, zero-unassigned safety pass, col-B type, debug logging'
 ws.cell(row=next_row, column=4).value = decision_text
 ws.cell(row=next_row, column=5).value = open_questions
 
