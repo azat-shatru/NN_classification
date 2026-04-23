@@ -6,39 +6,36 @@ wb = openpyxl.load_workbook('NN_Design_Tracker.xlsx')
 ws = wb['Session Log']
 
 next_row = ws.max_row + 1
-next_session = 21
+next_session = 22
 
 decision_text = (
-    "Session 2026-04-20 — Accurate variable-to-option assignment using Excel metadata + QNR. "
-    "col_mapper.py: parse_excel_metadata now reads col B (variable type) into var_types dict and "
-    "uses case-insensitive sheet name lookup. Added _col_b_to_var_type() helper mapping raw col-B "
-    "strings to canonical var-type keys. Added merge_qnr_with_metadata(questions, meta, col_groups) "
-    "as the central enrichment function. Logic: (1) for each question, collect col-E labels from "
-    "'Variable Label Information' sheet for all matched columns; (2) test for overlap between "
-    "QNR options and col-E labels using substring containment and word-overlap ratio >= 0.4; "
-    "(3) if overlap found → use INTERSECTION only, preserving QNR text as canonical (no duplicate "
-    "option versions); if no overlap → use QNR options only; (4) grid expansion fires when "
-    "n_matched_vars == n_options * n_col_headers, in three detection modes: QNR-provided "
-    "table_col_headers, headers inferred from variable name suffixes, legacy table_n_cols > 2; "
-    "expanded options formatted as '{col_header} {option}' assigned sequentially; (5) safety pass "
-    "ensures every column gets an assignment — suffix positional fallback (_1 → opts[0]) then "
-    "overassign all options if still unresolved; (6) annotates each enriched question with "
-    "_mapping_source and _mapping_warnings for auditability; (7) calls log_assignments() at DEBUG "
-    "level for per-column assignment tracing. "
-    "var_mapping.py: _default_option_assignments reordered so col_assignments branch runs before "
-    "scale/numeric short-circuit (metadata assignments survive for all q_types); grid expansion "
-    "block generalised to fire on col_headers length match, not just table_n_cols > 2; final "
-    "safety pass added after all loops to guarantee no column is left blank. refresh_mapping "
-    "callback now calls merge_qnr_with_metadata when both QNR and Excel metadata are loaded. "
-    "Type dropdown now prefers meta_var_type (col B) over heuristic suggest_var_type. "
-    "Test result: 351 columns enriched, 0 unassigned across all matched questions."
+    "Session 2026-04-23 — QNR parse accuracy: Strategy 3 cross-validation + "
+    "incomplete-parse warning in UI. "
+    "col_mapper.py: added Step 4b cross-validation block in merge_qnr_with_metadata(). "
+    "After final_opts is settled and grid expansion has been attempted, compares "
+    "len(final_opts) against len(dataset_cols) / n_col_headers. If QNR options are "
+    "less than 70% of what the column count implies (and expected > n_opts), appends "
+    "a warning to _mapping_warnings AND emits log.warning() so it surfaces in the "
+    "terminal without requiring DEBUG logging. Warning text format: "
+    "'{CODE}: QNR has {n} option(s) but {m} dataset column(s) suggest ~{expected} "
+    "— QNR parsing may be incomplete (check table structure in the source document)'. "
+    "var_mapping.py: accordion card header now shows a red '⚠ incomplete parse' "
+    "dbc.Badge for any question whose _mapping_warnings contains the parse-incomplete "
+    "signal; badge title tooltip shows the full message. Inside the accordion body, "
+    "a red inline alert box (background #fef2f2, border #fca5a5) renders the full "
+    "warning text so the user sees the mismatch count without hovering. "
+    "Survey 2.docx updated by user (re-uploaded). "
+    "Raw data 2.xlsx updated (minor binary change)."
 )
 
 open_questions = (
-    "S10B (and similar suffixed variants like S10b_N_1) not parsed from QNR docx — "
-    "parser stops at S10A; these fall back to Excel metadata only. QNR parser fix pending. "
-    "A7 value=8 (NEE) custom missing handling still pending (Stage 1). "
-    "Test full pipeline end-to-end with Raw data 2.xlsx + survey.docx. "
+    "S10B root cause still unknown — strategy 3 will now surface the exact mismatch "
+    "count when Survey 2.docx + Raw data 2.xlsx are loaded in the app. "
+    "Investigate the actual QNR docx structure for S10B once warning fires: "
+    "check whether it is a page-break split table (Strategy 1) or vMerge skip "
+    "on rows 10-20 (Strategy 2). "
+    "A7 value=8 (NEE) custom missing value handling still pending (Stage 1). "
+    "Test full pipeline end-to-end with Raw data 2.xlsx + Survey 2.docx. "
     "Re-zip and upload to Google Drive. "
     "Stages 1-9 inherited from Streamlit rewrite, not yet re-tested end-to-end."
 )
@@ -59,8 +56,8 @@ def copy_row_style(src_row_num, dst_row_num):
 copy_row_style(ws.max_row, next_row)
 
 ws.cell(row=next_row, column=1).value = next_session
-ws.cell(row=next_row, column=2).value = '2026-04-20 S21'
-ws.cell(row=next_row, column=3).value = 'Var Mapping: accurate option assignment via QNR+Excel merge — intersection rule, grid expansion, zero-unassigned safety pass, col-B type, debug logging'
+ws.cell(row=next_row, column=2).value = '2026-04-23 S22'
+ws.cell(row=next_row, column=3).value = 'QNR parse accuracy: Strategy 3 cross-validation — col_mapper warns when option count < dataset column count; red badge + alert in Var Mapping UI'
 ws.cell(row=next_row, column=4).value = decision_text
 ws.cell(row=next_row, column=5).value = open_questions
 

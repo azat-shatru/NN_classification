@@ -570,6 +570,10 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict,
             # Show first 70 chars in header; full text shown at top of body
             q_preview = (q_text[:70] + "…") if len(q_text) > 70 else q_text
 
+            mapping_warns = (q.get("_mapping_warnings", []) or []) if q else []
+            has_parse_warn = any("QNR parsing may be incomplete" in w
+                                 for w in mapping_warns)
+
             badges = [
                 dbc.Badge(q_type, color="info", className="ms-1") if q_type else None,
                 dbc.Badge(grp["scale"], color="light", text_color="dark",
@@ -579,6 +583,9 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict,
                 dbc.Badge(f"+{len(active_possibly)} possibly related",
                           color="warning", className="ms-1")
                     if active_possibly else None,
+                dbc.Badge("⚠ incomplete parse", color="danger", className="ms-1",
+                          title=mapping_warns[0] if mapping_warns else "")
+                    if has_parse_warn else None,
             ]
 
             header_content = html.Div([
@@ -594,10 +601,27 @@ def _render_groups(groups: list, df: pd.DataFrame, vm_state: dict,
                 className="vm-q-fulltext",
             ) if q_text else None
 
+        parse_warn_block = None
+        if code != "_UNMATCHED_" and q and any(
+            "QNR parsing may be incomplete" in w
+            for w in (q.get("_mapping_warnings", []) or [])
+        ):
+            warn_msgs = [w for w in (q.get("_mapping_warnings", []) or [])
+                         if "QNR parsing may be incomplete" in w]
+            parse_warn_block = html.Div(
+                [html.Span("⚠ "), html.Span(warn_msgs[0])],
+                style={
+                    "background": "#fef2f2", "border": "1px solid #fca5a5",
+                    "borderRadius": "4px", "padding": "6px 10px",
+                    "color": "#b91c1c", "fontSize": "0.82rem", "marginBottom": "8px",
+                }
+            )
+
         body_content = html.Div([
             q_text_block,
+            parse_warn_block,
             _render_var_table(grp, df, vm_state, default_assignments, all_q_codes),
-        ]) if (code != "_UNMATCHED_" and q_text_block) else \
+        ]) if (code != "_UNMATCHED_" and (q_text_block or parse_warn_block)) else \
             _render_var_table(grp, df, vm_state, default_assignments, all_q_codes)
 
         items.append(dbc.AccordionItem(

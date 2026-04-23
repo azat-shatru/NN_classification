@@ -590,6 +590,21 @@ def merge_qnr_with_metadata(questions: list, meta: dict, col_groups: dict) -> li
                 ]
                 grid_expanded = True
 
+        # ── Step 4b: cross-validate option count vs dataset column count ────────
+        # If QNR gave fewer options than dataset columns imply, the QNR parse
+        # is likely incomplete (e.g. table rows were silently dropped).
+        if n_opts > 0 and n_vars > 0 and not grid_expanded:
+            n_col_hdrs = len(col_headers) if col_headers else 1
+            expected_opts = n_vars // n_col_hdrs
+            if n_opts < expected_opts * 0.7 and expected_opts > n_opts:
+                msg = (
+                    f"{code}: QNR has {n_opts} option(s) but {n_vars} dataset "
+                    f"column(s) suggest ~{expected_opts} — QNR parsing may be "
+                    f"incomplete (check table structure in the source document)"
+                )
+                warnings.append(msg)
+                log.warning(msg)
+
         # ── Step 5: build col_assignments for every column ───────────────────
         col_assignments: dict = {}
 
