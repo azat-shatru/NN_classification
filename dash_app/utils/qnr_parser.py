@@ -67,6 +67,31 @@ def _strip_pn(text: str) -> tuple[str, str]:
     return clean, " | ".join(pns)
 
 
+def _cell_is_blue(cell) -> bool:
+    """Return True if any run in the cell has a blue-ish font color."""
+    from docx.oxml.ns import qn
+    for para in cell.paragraphs:
+        for run in para.runs:
+            rPr = run._r.find(qn("w:rPr"))
+            if rPr is None:
+                continue
+            color_el = rPr.find(qn("w:color"))
+            if color_el is None:
+                continue
+            val = color_el.get(qn("w:val"), "")
+            if not val or val.lower() == "auto":
+                continue
+            try:
+                r = int(val[0:2], 16)
+                g = int(val[2:4], 16)
+                b = int(val[4:6], 16)
+                if b > 100 and b > r and b > g:
+                    return True
+            except (ValueError, IndexError):
+                pass
+    return False
+
+
 def _detect_type(question_text: str, pn_text: str, options: list) -> dict:
     """Infer question type and scale info from text."""
     combined = question_text + " " + pn_text
@@ -163,6 +188,17 @@ def _parse_table_for_options(tbl) -> dict:
         header_texts.append(" ".join(texts).strip())
     table_col_headers = header_texts[1:]  # skip col 0
 
+    # ── Step 1b: detect "borrows options from" reference ─────────────────────
+    # Row 1, col 0 written in blue = PN note pointing to source question code
+    borrows_from = None
+    if len(rows) > 1:
+        row1_cells = rows[1].cells
+        if row1_cells:
+            cell_text = row1_cells[0].text.strip()
+            if (re.match(r'^[A-Z]\d{1,2}[a-z]?\d?$', cell_text, re.IGNORECASE)
+                    and _cell_is_blue(row1_cells[0])):
+                borrows_from = cell_text.upper()
+
     # ── Step 2: iterate rows 1+ for options ──────────────────────────────────
     options = []
     n_unmerged_rows = 0
@@ -219,6 +255,7 @@ def _parse_table_for_options(tbl) -> dict:
         "table_col_headers": table_col_headers,
         "table_n_cols": n_cols,
         "n_unmerged_rows": n_unmerged_rows,
+        "borrows_options_from": borrows_from,
     }
 
 
@@ -267,6 +304,8 @@ def _parse_docx(path: Path) -> list[dict]:
             q["options"] = table_info["options"]
             q["table_col_headers"] = table_info["table_col_headers"]
             q["table_n_cols"] = table_info["table_n_cols"]
+            if table_info.get("borrows_options_from"):
+                q["borrows_options_from"] = table_info["borrows_options_from"]
         else:
             # No-table path
             if buf:
@@ -343,10 +382,14 @@ def _parse_docx(path: Path) -> list[dict]:
                         text_buf.append(clean)
 
         elif kind == "table":
-            if current_q and not had_table:
-                table_info_for_current = _parse_table_for_options(val)
-                had_table = True
-            # Tables without a current question are ignored
+            if current_q:
+                new_info = _parse_table_for_options(val)
+                if not had_table:
+                    table_info_for_current = new_info
+                    had_table = True
+                else:
+                    # Continuation table split across a page break — append options
+                    table_info_for_current["options"].extend(new_info["options"])
 
     # Flush last question
     _flush_question(current_q, text_buf,
@@ -356,6 +399,16 @@ def _parse_docx(path: Path) -> list[dict]:
     seen = {}
     for q in questions:
         seen[q["code"]] = q
+
+    # Resolve borrowed options: questions whose table pointed to another question's code
+    q_opt_map = {code: q.get("options", []) for code, q in seen.items()}
+    for q in seen.values():
+        bf = q.get("borrows_options_from")
+        if bf and not q.get("options"):
+            src_opts = q_opt_map.get(bf.upper(), [])
+            if src_opts:
+                q["options"] = list(src_opts)
+
     return list(seen.values())
 
 
