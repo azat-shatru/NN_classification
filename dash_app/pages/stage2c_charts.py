@@ -15,6 +15,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server_store
 from utils.col_mapper import build_codebook
+from utils.ppt_export import build_pptx
 
 
 # ── Chart menu per variable type ──────────────────────────────────────────────
@@ -612,9 +613,14 @@ def layout(state: dict) -> html.Div:
 
         # Export
         dbc.Card(dbc.CardBody([
-            html.H5("Export"),
+            html.H5("Export to PowerPoint"),
+            html.P([
+                html.I(className="bi bi-info-circle me-1"),
+                "Set a Slide # on each chart card above. "
+                "Charts sharing the same number appear on the same slide.",
+            ], className="text-muted", style={"fontSize": "0.85rem"}),
             dbc.Button(
-                [html.I(className="bi bi-file-pdf me-2"), "Generate PDF"],
+                [html.I(className="bi bi-file-earmark-ppt me-2"), "Generate PPT"],
                 id="cp2c-export-btn", color="primary",
             ),
             html.Div(id="cp2c-export-status", className="mt-2"),
@@ -629,13 +635,15 @@ def layout(state: dict) -> html.Div:
     Output("cp2c-overrides", "data"),
     Input({"type": "cp2c-ct",       "index": ALL}, "value"),
     Input({"type": "cp2c-pct-tile", "index": ALL}, "value"),
+    Input({"type": "cp2c-slide",    "index": ALL}, "value"),
     State({"type": "cp2c-ct",       "index": ALL}, "id"),
     State({"type": "cp2c-pct-tile", "index": ALL}, "id"),
+    State({"type": "cp2c-slide",    "index": ALL}, "id"),
     State("cp2c-overrides", "data"),
     prevent_initial_call=True,
 )
-def update_overrides(ct_vals, pct_vals, ct_ids, pct_ids, current):
-    """Persist per-tile chart type and count/% selections."""
+def update_overrides(ct_vals, pct_vals, slide_vals, ct_ids, pct_ids, slide_ids, current):
+    """Persist per-tile chart type, count/%, and slide number selections."""
     overrides = dict(current or {})
     changed = False
     for ct_id, val in zip(ct_ids or [], ct_vals or []):
@@ -647,6 +655,17 @@ def update_overrides(ct_vals, pct_vals, ct_ids, pct_ids, current):
         key = pct_id["index"] + "__pct"
         if val and overrides.get(key) != val:
             overrides[key] = val
+            changed = True
+    for slide_id, val in zip(slide_ids or [], slide_vals or []):
+        key = slide_id["index"] + "__slide"
+        cur = overrides.get(key)
+        # Store the slide number (or clear it if blank)
+        new_val = int(val) if val not in (None, "") else None
+        if new_val != cur:
+            if new_val is None:
+                overrides.pop(key, None)
+            else:
+                overrides[key] = new_val
             changed = True
     return overrides if changed else no_update
 
@@ -775,6 +794,22 @@ def render_charts(type_filter, search, cols_per_row, breakout_col, overrides, st
                     style={"fontSize": "0.72rem", "marginLeft": "12px"},
                 )
             )
+        # Slide number input
+        controls.append(
+            html.Div([
+                html.Small("Slide #", style={"color": "#6b7280", "marginRight": "4px"}),
+                dbc.Input(
+                    id={"type": "cp2c-slide", "index": code},
+                    type="number", min=1, step=1,
+                    placeholder="—",
+                    value=overrides.get(code + "__slide"),
+                    size="sm",
+                    style={"width": "64px", "display": "inline-block",
+                           "padding": "1px 4px", "fontSize": "0.72rem"},
+                ),
+            ], style={"marginLeft": "auto", "display": "flex",
+                      "alignItems": "center", "whiteSpace": "nowrap"})
+        )
 
         card = dbc.Card(dbc.CardBody([
             html.Div([
@@ -809,7 +844,7 @@ def render_charts(type_filter, search, cols_per_row, breakout_col, overrides, st
     State("app-state",     "data"),
     prevent_initial_call=True,
 )
-def export_pdf(n_clicks, type_filter, search, overrides, state):
+def export_ppt(n_clicks, type_filter, search, overrides, state):
     if not n_clicks:
         return no_update, no_update
 
@@ -833,59 +868,17 @@ def export_pdf(n_clicks, type_filter, search, overrides, state):
              or search.lower() in t.get("question", "").lower())
     ]
 
+    if not visible:
+        return no_update, dbc.Alert("No charts visible to export.", color="warning")
+
     try:
-        from reportlab.lib.pagesizes import landscape, A4
-        from reportlab.platypus import (SimpleDocTemplate, Spacer,
-                                        Paragraph, Image as RLImage)
-        from reportlab.lib.styles import getSampleStyleSheet
-        from reportlab.lib.units import cm
-
-        styles = getSampleStyleSheet()
-        buf    = io.BytesIO()
-        doc    = SimpleDocTemplate(buf, pagesize=landscape(A4),
-                                   leftMargin=1*cm, rightMargin=1*cm,
-                                   topMargin=1*cm, bottomMargin=1*cm)
-        story  = []
-        for tile in visible:
-            var_type   = tile.get("var_type", "categorical")
-            chart_opts = CHART_OPTIONS.get(var_type, ["Bar chart"])
-            chosen_ct  = overrides.get(tile["code"],
-                                       chart_opts[0] if not (_is_scale_grid(tile)
-                                       or tile.get("group_type") == "grid")
-                                       else "Box Stack")
-            if chosen_ct not in chart_opts:
-                chosen_ct = chart_opts[0]
-            show_pct_key = tile["code"] + "__pct"
-            show_pct = (overrides.get(show_pct_key, "pct") == "pct")
-            try:
-                fig = _dispatch(df, tile, qnr_questions, show_pct,
-                                chart_type_override=chosen_ct)
-                fig.update_layout(height=380,
-                                  margin=dict(t=50, b=30, l=40, r=20),
-                                  paper_bgcolor="white", plot_bgcolor="white")
-                img = fig.to_image(format="png", width=780, height=380)
-                story.append(RLImage(io.BytesIO(img), width=18*cm, height=9*cm))
-                story.append(Paragraph(
-                    f"<b>{tile['code']}</b> — {tile.get('question','')[:160]}",
-                    styles["Normal"]
-                ))
-                if tile.get("scale_low") and tile.get("scale_high"):
-                    sp = tile.get("scale_points", "")
-                    story.append(Paragraph(
-                        f"Scale: 1 = {tile['scale_low']}  →  {sp} = {tile['scale_high']}",
-                        styles["Normal"]
-                    ))
-                story.append(Spacer(1, 0.5*cm))
-            except Exception:
-                pass
-
-        doc.build(story)
-        buf.seek(0)
-        return (dcc.send_bytes(buf.read(), "charts_portal.pdf"),
-                dbc.Alert("PDF ready — downloading…", color="success", duration=3000))
-
+        buf = build_pptx(visible, df, overrides, qnr_questions)
+        return (
+            dcc.send_bytes(buf.read(), "charts_portal.pptx"),
+            dbc.Alert("PPT ready — downloading…", color="success", duration=3000),
+        )
     except Exception as exc:
         return no_update, dbc.Alert(
-            f"PDF error: {exc}. Install: pip install kaleido reportlab",
-            color="danger"
+            f"PPT export error: {exc}. Install: pip install python-pptx",
+            color="danger",
         )

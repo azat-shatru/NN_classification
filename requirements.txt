@@ -15,3 +15,7 @@ factor_analyzer
 streamlit-sortables
 reportlab
 scipy
+python-pptx
+dash
+dash-bootstrap-components
+dash-ag-grid
