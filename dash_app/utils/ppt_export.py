@@ -4,6 +4,7 @@ Builds actual chart objects (not images) so they remain editable in PowerPoint.
 """
 import io
 import re
+import zipfile
 import pandas as pd
 
 from pptx import Presentation
@@ -426,6 +427,54 @@ def _blank_layout(prs):
     return prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
 
 
+def _fix_pptx_buf(raw_buf: io.BytesIO) -> io.BytesIO:
+    """
+    Post-process the PPTX buffer to fix issues that python-pptx generates
+    but PowerPoint's strict OOXML parser rejects:
+
+    1. Negative axId values — OOXML requires xsd:unsignedInt (≥ 0).
+       python-pptx sometimes generates negative signed-32-bit values.
+       Fix: convert to unsigned by adding 2^32.
+
+    2. Any leftover XML control characters in chart/slide XML that
+       _xml_safe() might have missed (belt-and-suspenders).
+    """
+    raw_buf.seek(0)
+    src = zipfile.ZipFile(raw_buf, "r")
+
+    out_buf = io.BytesIO()
+    with zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+        for name in src.namelist():
+            data = src.read(name)
+
+            # Only patch XML files (chart XML is the critical one)
+            if name.endswith(".xml") or name.endswith(".rels"):
+                try:
+                    text = data.decode("utf-8")
+
+                    # Fix 1 — negative axId / axId-like values
+                    def _to_unsigned(m):
+                        v = int(m.group(1))
+                        if v < 0:
+                            v += 2 ** 32
+                        return f'val="{v}"'
+
+                    text = re.sub(r'val="(-\d+)"', _to_unsigned, text)
+
+                    # Fix 2 — strip any stray XML control chars
+                    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+
+                    data = text.encode("utf-8")
+                except Exception:
+                    pass  # Leave binary files untouched
+
+            dst.writestr(name, data)
+
+    src.close()
+    out_buf.seek(0)
+    return out_buf
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def build_pptx(visible: list, df, overrides: dict, qnr_questions: list) -> io.BytesIO:
@@ -457,7 +506,8 @@ def build_pptx(visible: list, df, overrides: dict, qnr_questions: list) -> io.By
             _add_chart_block(slide, tile, df, overrides, qnr_questions,
                              left, top, width, height)
 
-    buf = io.BytesIO()
-    prs.save(buf)
-    buf.seek(0)
-    return buf
+    raw = io.BytesIO()
+    prs.save(raw)
+
+    # Post-process: fix OOXML compliance issues before sending to browser
+    return _fix_pptx_buf(raw)
