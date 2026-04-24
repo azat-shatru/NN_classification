@@ -79,8 +79,13 @@ NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 20
 - Sheet name lookup is case-insensitive
 - `_mapping_source` field on enriched questions: `intersection` | `qnr_only` | `col_e_only` | `grid_expansion` | `n/a`
 
-## Current state (last updated 2026-04-20, session 21)
-- Var Mapping option assignment rewritten: intersection/QNR-only rule, grid expansion, zero-unassigned safety pass
+## Current state (last updated 2026-04-23, session 22)
+- Session 22: QNR parse accuracy — Strategy 3 cross-validation added to col_mapper.py
+- `merge_qnr_with_metadata()` now cross-validates option count vs dataset column count; warns when QNR options < 70% of implied count
+- Warning format: `'{CODE}: QNR has {n} option(s) but {m} dataset column(s) suggest ~{expected} — QNR parsing may be incomplete'`
+- var_mapping.py: red `⚠ incomplete parse` dbc.Badge on accordion card header + inline alert in body for any question with parse warnings
+- Survey 2.docx and Raw data 2.xlsx updated by user
+- Session 21: Var Mapping option assignment rewritten: intersection/QNR-only rule, grid expansion, zero-unassigned safety pass
 - parse_excel_metadata reads col B (var_types) in addition to col E (var_labels); case-insensitive sheet lookup
 - refresh_mapping calls merge_qnr_with_metadata when both QNR and Excel metadata loaded
 - Type dropdown prefers col-B type over heuristic inference
@@ -89,7 +94,8 @@ NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 20
 - Stages 1–9: inherited from original Streamlit rewrite, not yet re-tested end-to-end
 
 ## Open tasks
-- S10B (and suffixed variants S10b_N_1) not parsed from QNR docx — parser stops at S10A; fix qnr_parser
-- Test full pipeline end-to-end with Raw data 2.xlsx + survey.docx
+- S10B root cause — Strategy 3 will surface mismatch count; investigate actual docx structure (page-break split table vs vMerge skip on rows 10-20)
+- Test full pipeline end-to-end with Raw data 2.xlsx + Survey 2.docx
 - A7 value=8 (NEE) custom missing value handling (Stage 1)
 - Re-zip and upload to Google Drive
+- Stages 1-9 not yet re-tested end-to-end

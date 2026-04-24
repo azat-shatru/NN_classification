@@ -87,6 +87,17 @@ def suggest_var_type(df: pd.DataFrame, cols: list, group_type: str, q_type: str 
     if group_type == "grid":
         return "grid"
     if group_type == "multi":
+        # Check if the columns actually contain scale ratings (1–5 or 1–7)
+        # before assuming multi-select binary columns
+        try:
+            sample = df[cols].apply(pd.to_numeric, errors="coerce").dropna(how="all")
+            if not sample.empty:
+                max_val = sample.max().max()
+                min_val = sample.min().min()
+                if pd.notna(max_val) and min_val >= 1 and 2 < max_val <= 7:
+                    return "scale_7" if max_val > 5 else "scale_5"
+        except Exception:
+            pass
         return "multi"
 
     primary = cols[0]
