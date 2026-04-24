@@ -99,10 +99,11 @@ def _sidebar_nav(state: dict, pathname: str) -> list:
         is_active = pathname == path or (pathname in ("/", "") and path == "/mapping")
         link_classes = "sidebar-link" + (" active" if is_active else "") + (" done" if is_done else "")
         links.append(
-            html.A(
+            dcc.Link(
                 [html.I(className=icon), label],
                 href=path,
                 className=link_classes,
+                refresh=False,
             )
         )
 
@@ -203,7 +204,7 @@ app.layout = html.Div(
 @callback(
     Output("page-content", "children"),
     Input("url", "pathname"),
-    Input("app-state", "data"),
+    State("app-state", "data"),
 )
 def render_page(pathname, state):
     if state is None:

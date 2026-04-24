@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 
-from dash import dcc, html, Input, Output, State, callback, no_update, ALL
+from dash import dcc, html, Input, Output, State, callback, no_update, ALL, ctx, dash_table
 import dash_bootstrap_components as dbc
 
 import sys, os
@@ -574,6 +574,27 @@ def layout(state: dict) -> html.Div:
     return html.Div([
         header,
         dcc.Store(id="cp2c-overrides", data={}, storage_type="session"),
+        dcc.Store(id="cp2c-raw-tile-code", storage_type="memory"),
+
+        # Floating Apply button
+        html.Div(
+            dbc.Button(
+                [html.I(className="bi bi-check-lg me-1"), "Apply"],
+                id="cp2c-apply-btn",
+                color="primary",
+                n_clicks=0,
+                title="Apply current filters and re-render charts",
+            ),
+            style={"position": "fixed", "top": "18px", "right": "36px",
+                   "zIndex": 9999},
+        ),
+
+        # Raw-data modal (shared; populated on demand)
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle(id="cp2c-raw-modal-title")),
+            dbc.ModalBody(id="cp2c-raw-modal-body",
+                          style={"maxHeight": "70vh", "overflowY": "auto"}),
+        ], id="cp2c-raw-modal", size="xl", scrollable=True, is_open=False),
 
         # Controls
         dbc.Card(dbc.CardBody([
@@ -673,14 +694,15 @@ def update_overrides(ct_vals, pct_vals, slide_vals, ct_ids, pct_ids, slide_ids, 
 @callback(
     Output("cp2c-charts-grid", "children"),
     Output("cp2c-summary",     "children"),
-    Input("cp2c-types",     "value"),
-    Input("cp2c-search",    "value"),
-    Input("cp2c-cols",      "value"),
-    Input("cp2c-breakout",  "value"),
-    Input("cp2c-overrides", "data"),
+    Input("cp2c-apply-btn",  "n_clicks"),
+    State("cp2c-types",     "value"),
+    State("cp2c-search",    "value"),
+    State("cp2c-cols",      "value"),
+    State("cp2c-breakout",  "value"),
+    State("cp2c-overrides", "data"),
     State("app-state",      "data"),
 )
-def render_charts(type_filter, search, cols_per_row, breakout_col, overrides, state):
+def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col, overrides, state):
     df            = _get_df(state or {})
     codebook      = _get_codebook(df)
     qnr_questions = server_store.get_val("qnr_questions") or []
@@ -813,10 +835,23 @@ def render_charts(type_filter, search, cols_per_row, breakout_col, overrides, st
 
         card = dbc.Card(dbc.CardBody([
             html.Div([
-                html.Strong(code),
-                html.Span(f" — {q_text}",
-                          style={"fontSize": "0.82rem", "color": "#374151"}),
-            ], className="mb-1"),
+                html.Div([
+                    html.Strong(code),
+                    html.Span(f" — {q_text}",
+                              style={"fontSize": "0.82rem", "color": "#374151"}),
+                ]),
+                html.Button(
+                    [html.I(className="bi bi-table me-1"), "Data"],
+                    id={"type": "cp2c-raw-btn", "index": code},
+                    title="View raw data used for this chart",
+                    n_clicks=0,
+                    style={"fontSize": "0.72rem", "padding": "2px 8px",
+                           "borderRadius": "4px", "border": "1px solid #d1d5db",
+                           "background": "#f9fafb", "color": "#374151",
+                           "cursor": "pointer", "whiteSpace": "nowrap",
+                           "flexShrink": "0"},
+                ),
+            ], className="d-flex justify-content-between align-items-start mb-1"),
             html.Small(scale_note, className="text-muted d-block mb-1")
             if scale_note else None,
             html.Div(controls, className="d-flex align-items-center flex-wrap mb-1"),
@@ -882,3 +917,82 @@ def export_ppt(n_clicks, type_filter, search, overrides, state):
             f"PPT export error: {exc}. Install: pip install python-pptx",
             color="danger",
         )
+
+
+@callback(
+    Output("cp2c-raw-tile-code", "data"),
+    Output("cp2c-raw-modal",     "is_open"),
+    Input({"type": "cp2c-raw-btn", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def open_raw_modal(n_clicks_list):
+    triggered = ctx.triggered_id
+    if not triggered or not any(n for n in (n_clicks_list or [])):
+        return no_update, no_update
+    return triggered["index"], True
+
+
+@callback(
+    Output("cp2c-raw-modal-title", "children"),
+    Output("cp2c-raw-modal-body",  "children"),
+    Input("cp2c-raw-tile-code", "data"),
+    State("app-state", "data"),
+    prevent_initial_call=True,
+)
+def populate_raw_modal(code, state):
+    if not code:
+        return "Raw Data", ""
+
+    df            = _get_df(state or {})
+    codebook      = _get_codebook(df)
+    qnr_questions = server_store.get_val("qnr_questions") or []
+
+    if df is None or not codebook:
+        return code, dbc.Alert("No data available.", color="warning")
+
+    tile = next((t for t in codebook if t["code"] == code), None)
+    if not tile:
+        return code, dbc.Alert("Question not found in codebook.", color="warning")
+
+    all_cols = [c for c in tile.get("all_cols", []) if c in df.columns]
+    if not all_cols:
+        return code, dbc.Alert("No data columns mapped for this question.", color="warning")
+
+    raw = df[all_cols].copy()
+
+    # Apply value labels for single-column questions
+    if len(all_cols) == 1:
+        labels = _value_labels(tile, qnr_questions)
+        if labels:
+            col = all_cols[0]
+            raw[col] = raw[col].map(lambda x: labels.get(str(x), x))
+
+    # Rename columns using option labels for multi-column questions
+    col_map = _col_to_label(tile, qnr_questions)
+    raw = raw.rename(columns={c: col_map.get(c, c) for c in all_cols})
+
+    n_rows   = len(raw)
+    preview  = raw.head(500)
+    title    = f"{code} — {tile.get('question', '')[:80]}"
+    summary  = html.P(
+        f"Showing up to 500 of {n_rows} rows · {len(all_cols)} column(s)",
+        className="text-muted mb-2",
+        style={"fontSize": "0.8rem"},
+    )
+
+    table = dash_table.DataTable(
+        data=preview.to_dict("records"),
+        columns=[{"name": c, "id": c} for c in preview.columns],
+        page_size=25,
+        style_table={"overflowX": "auto"},
+        style_cell={"fontSize": "0.8rem", "padding": "4px 8px",
+                    "textAlign": "left", "maxWidth": "220px",
+                    "overflow": "hidden", "textOverflow": "ellipsis"},
+        style_header={"fontWeight": "600", "background": "#f3f4f6",
+                      "fontSize": "0.78rem", "borderBottom": "2px solid #d1d5db"},
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "background": "#f9fafb"},
+        ],
+    )
+
+    return title, [summary, table]
