@@ -548,177 +548,230 @@ def layout(state: dict) -> html.Div:
 
     header = html.Div([
         html.H2("Stage 2.6 — Charts Portal"),
-        html.P("Charts from raw data — axes use QNR option labels, not variable codes."),
+        html.P("Select a question in the left panel. Ribbon settings apply only to that question."),
     ], className="stage-header")
 
     if not codebook:
         return html.Div([header, dbc.Alert(
             "No variable mapping found. Complete the Variable Mapping stage first.",
-            color="warning"
+            color="warning",
         )])
-
     if df is None:
         return html.Div([header, dbc.Alert(
-            "No dataset loaded. Complete Stage 0 first.", color="warning"
+            "No dataset loaded. Complete Stage 0 first.", color="warning",
         )])
 
-    included  = [t for t in codebook
-                 if t.get("include") and t.get("dataset_col")
-                 and t["dataset_col"] in df.columns]
-    all_types = sorted({t["var_type"] for t in included})
+    included = [t for t in codebook
+                if t.get("include") and t.get("dataset_col")
+                and t["dataset_col"] in df.columns]
+    if not included:
+        return html.Div([header, dbc.Alert("No includeable variables found.", color="warning")])
+
+    all_types     = sorted({t["var_type"] for t in included})
+    init_code     = included[0]["code"]
     breakout_opts = [{"label": "None", "value": "None"}] + [
         {"label": c, "value": c}
         for c in df.columns if 1 < df[c].nunique() <= 10
     ]
 
+    _sep = html.Div(style={
+        "width": "1px", "height": "22px",
+        "background": "#d1d5db", "margin": "0 10px", "flexShrink": "0",
+    })
+
     return html.Div([
         header,
-        dcc.Store(id="cp2c-overrides", data={}, storage_type="session"),
-        dcc.Store(id="cp2c-raw-tile-code", storage_type="memory"),
+        dcc.Store(id="cp2c-overrides",      data={},      storage_type="session"),
+        dcc.Store(id="cp2c-selected-code",  data=init_code, storage_type="memory"),
+        dcc.Download(id="cp2c-download"),
 
-        # Floating Apply button
-        html.Div(
-            dbc.Button(
-                [html.I(className="bi bi-check-lg me-1"), "Apply"],
-                id="cp2c-apply-btn",
-                color="primary",
-                n_clicks=0,
-                title="Apply current filters and re-render charts",
-            ),
-            style={"position": "fixed", "top": "18px", "right": "36px",
-                   "zIndex": 9999},
-        ),
-
-        # Raw-data modal (shared; populated on demand)
+        # Raw-data modal
         dbc.Modal([
             dbc.ModalHeader(dbc.ModalTitle(id="cp2c-raw-modal-title")),
             dbc.ModalBody(id="cp2c-raw-modal-body",
                           style={"maxHeight": "70vh", "overflowY": "auto"}),
         ], id="cp2c-raw-modal", size="xl", scrollable=True, is_open=False),
 
-        # Controls
-        dbc.Card(dbc.CardBody([
-            dbc.Row([
-                dbc.Col([
-                    html.Label("Variable types", className="fw-semibold"),
+        # ── Main content: left nav + right panel ──────────────────────────
+        html.Div([
+
+            # ── LEFT NAV PANEL ────────────────────────────────────────────
+            html.Div([
+                # Filter controls
+                html.Div([
                     dcc.Dropdown(
                         id="cp2c-types",
                         options=[{"label": t, "value": t} for t in all_types],
                         value=all_types, multi=True, clearable=False,
+                        placeholder="Variable types…",
+                        style={"fontSize": "0.76rem"},
                     ),
-                ], width=4),
-                dbc.Col([
-                    html.Label("Search", className="fw-semibold"),
-                    dbc.Input(id="cp2c-search",
-                              placeholder="code or keyword…", debounce=True),
-                ], width=4),
-                dbc.Col([
-                    html.Label("Columns per row", className="fw-semibold"),
-                    dcc.Slider(id="cp2c-cols", min=1, max=3, step=1, value=2,
-                               marks={"1": "1", "2": "2", "3": "3"},
-                               tooltip={"always_visible": False}),
-                ], width=2),
-                dbc.Col([
-                    html.Label("Breakout by", className="fw-semibold"),
-                    dcc.Dropdown(id="cp2c-breakout",
-                                 options=breakout_opts, value="None",
-                                 clearable=False),
-                ], width=2),
-            ], className="g-3"),
-        ]), className="mb-3"),
+                    dbc.Input(
+                        id="cp2c-search",
+                        placeholder="Search questions…",
+                        debounce=True, size="sm",
+                        style={"fontSize": "0.76rem", "marginTop": "6px"},
+                    ),
+                ], style={"padding": "10px 10px 6px"}),
+                html.Hr(style={"margin": "0", "borderColor": "#e5e7eb"}),
+                # Question list — populated by callback
+                html.Div(id="cp2c-nav-list"),
+            ], style={
+                "width": "230px", "minWidth": "230px", "flexShrink": "0",
+                "borderRight": "1px solid #e5e7eb",
+                "height": "calc(100vh - 130px)",
+                "overflowY": "auto",
+                "backgroundColor": "#f8f9fa",
+                "position": "sticky", "top": "0", "alignSelf": "flex-start",
+            }),
 
-        html.Div(id="cp2c-summary",
-                 className="text-muted mb-2",
-                 style={"fontSize": "0.85rem"}),
-        html.Div(id="cp2c-charts-grid"),
+            # ── RIGHT: ribbon + chart ─────────────────────────────────────
+            html.Div([
 
-        # Export
-        dbc.Card(dbc.CardBody([
-            html.H5("Export to PowerPoint"),
-            html.P([
-                html.I(className="bi bi-info-circle me-1"),
-                "Set a Slide # on each chart card above. "
-                "Charts sharing the same number appear on the same slide.",
-            ], className="text-muted", style={"fontSize": "0.85rem"}),
-            dbc.Button(
-                [html.I(className="bi bi-file-earmark-ppt me-2"), "Generate PPT"],
-                id="cp2c-export-btn", color="primary",
-            ),
-            html.Div(id="cp2c-export-status", className="mt-2"),
-            dcc.Download(id="cp2c-download"),
-        ]), className="mt-3"),
+                # Ribbon
+                html.Div([
+                    # Chart type
+                    html.Div([
+                        html.Small("Chart:", style={
+                            "color": "#6b7280", "fontWeight": "600",
+                            "marginRight": "6px", "whiteSpace": "nowrap",
+                        }),
+                        dbc.RadioItems(
+                            id="cp2c-ribbon-ct",
+                            options=[], value=None, inline=True,
+                            style={"fontSize": "0.76rem"},
+                        ),
+                    ], className="d-flex align-items-center"),
+                    _sep,
+                    # Count / %
+                    html.Div([
+                        html.Small("Show:", style={
+                            "color": "#6b7280", "fontWeight": "600",
+                            "marginRight": "6px", "whiteSpace": "nowrap",
+                        }),
+                        dbc.RadioItems(
+                            id="cp2c-ribbon-pct",
+                            options=[{"label": "Count", "value": "count"},
+                                     {"label": "%",     "value": "pct"}],
+                            value="pct", inline=True,
+                            style={"fontSize": "0.76rem"},
+                        ),
+                    ], id="cp2c-ribbon-pct-wrap", className="d-flex align-items-center"),
+                    _sep,
+                    # Slide #
+                    html.Div([
+                        html.Small("Slide #:", style={
+                            "color": "#6b7280", "fontWeight": "600",
+                            "marginRight": "4px", "whiteSpace": "nowrap",
+                        }),
+                        dbc.Input(
+                            id="cp2c-ribbon-slide",
+                            type="number", min=1, step=1,
+                            placeholder="—", size="sm", debounce=True,
+                            style={"width": "62px", "fontSize": "0.76rem"},
+                        ),
+                    ], className="d-flex align-items-center"),
+                    _sep,
+                    # Breakout
+                    html.Div([
+                        html.Small("Breakout:", style={
+                            "color": "#6b7280", "fontWeight": "600",
+                            "marginRight": "4px", "whiteSpace": "nowrap",
+                        }),
+                        dcc.Dropdown(
+                            id="cp2c-breakout",
+                            options=breakout_opts, value="None",
+                            clearable=False,
+                            style={"width": "130px", "fontSize": "0.76rem"},
+                        ),
+                    ], className="d-flex align-items-center"),
+                    # Push remaining items right
+                    html.Div(style={"flex": "1"}),
+                    dbc.Button(
+                        [html.I(className="bi bi-table me-1"), "Data"],
+                        id="cp2c-raw-btn", color="light", size="sm",
+                        className="me-2",
+                    ),
+                    dbc.Button(
+                        [html.I(className="bi bi-file-earmark-ppt me-1"), "Export PPT"],
+                        id="cp2c-export-btn", color="primary", size="sm",
+                    ),
+                    html.Div(id="cp2c-export-status", style={"marginLeft": "8px"}),
+                ], style={
+                    "display": "flex", "alignItems": "center", "flexWrap": "wrap",
+                    "padding": "8px 16px", "gap": "4px",
+                    "borderBottom": "1px solid #e5e7eb",
+                    "backgroundColor": "white",
+                    "position": "sticky", "top": "0", "zIndex": 100,
+                    "boxShadow": "0 1px 3px rgba(0,0,0,0.06)",
+                }),
+
+                # Chart display area
+                html.Div(id="cp2c-chart-area",
+                         style={"padding": "20px 28px", "minHeight": "400px"}),
+
+            ], style={
+                "flex": "1", "minWidth": "0",
+                "display": "flex", "flexDirection": "column",
+                "backgroundColor": "white",
+            }),
+        ], style={
+            "display": "flex", "alignItems": "flex-start",
+            "marginTop": "8px",
+        }),
     ])
 
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
+# ── 1. Nav click → update selected code ──────────────────────────────────────
 @callback(
-    Output("cp2c-overrides", "data"),
-    Input({"type": "cp2c-ct",       "index": ALL}, "value"),
-    Input({"type": "cp2c-pct-tile", "index": ALL}, "value"),
-    Input({"type": "cp2c-slide",    "index": ALL}, "value"),
-    State({"type": "cp2c-ct",       "index": ALL}, "id"),
-    State({"type": "cp2c-pct-tile", "index": ALL}, "id"),
-    State({"type": "cp2c-slide",    "index": ALL}, "id"),
-    State("cp2c-overrides", "data"),
+    Output("cp2c-selected-code", "data"),
+    Input({"type": "cp2c-nav-item", "index": ALL}, "n_clicks"),
     prevent_initial_call=True,
 )
-def update_overrides(ct_vals, pct_vals, slide_vals, ct_ids, pct_ids, slide_ids, current):
-    """Persist per-tile chart type, count/%, and slide number selections."""
-    overrides = dict(current or {})
-    changed = False
-    for ct_id, val in zip(ct_ids or [], ct_vals or []):
-        key = ct_id["index"]
-        if val and overrides.get(key) != val:
-            overrides[key] = val
-            changed = True
-    for pct_id, val in zip(pct_ids or [], pct_vals or []):
-        key = pct_id["index"] + "__pct"
-        if val and overrides.get(key) != val:
-            overrides[key] = val
-            changed = True
-    for slide_id, val in zip(slide_ids or [], slide_vals or []):
-        key = slide_id["index"] + "__slide"
-        cur = overrides.get(key)
-        # Store the slide number (or clear it if blank)
-        new_val = int(val) if val not in (None, "") else None
-        if new_val != cur:
-            if new_val is None:
-                overrides.pop(key, None)
-            else:
-                overrides[key] = new_val
-            changed = True
-    return overrides if changed else no_update
+def select_question(n_clicks_list):
+    triggered = ctx.triggered_id
+    if not triggered or not any(n for n in (n_clicks_list or []) if n):
+        return no_update
+    return triggered["index"]
 
 
+# ── 2. Main render: nav + ribbon + chart ──────────────────────────────────────
 @callback(
-    Output("cp2c-charts-grid", "children"),
-    Output("cp2c-summary",     "children"),
-    Input("cp2c-apply-btn",  "n_clicks"),
-    State("cp2c-types",     "value"),
-    State("cp2c-search",    "value"),
-    State("cp2c-cols",      "value"),
-    State("cp2c-breakout",  "value"),
-    State("cp2c-overrides", "data"),
-    State("app-state",      "data"),
+    Output("cp2c-chart-area",        "children"),
+    Output("cp2c-nav-list",          "children"),
+    Output("cp2c-ribbon-ct",         "options"),
+    Output("cp2c-ribbon-ct",         "value"),
+    Output("cp2c-ribbon-pct",        "value"),
+    Output("cp2c-ribbon-pct-wrap",   "style"),
+    Output("cp2c-ribbon-slide",      "value"),
+
+    Input("cp2c-selected-code",  "data"),
+    Input("cp2c-overrides",      "data"),
+    Input("cp2c-types",          "value"),
+    Input("cp2c-search",         "value"),
+    Input("cp2c-breakout",       "value"),
+
+    State("app-state", "data"),
 )
-def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col, overrides, state):
+def render_view(selected_code, overrides, type_filter, search, breakout_col, state):
     df            = _get_df(state or {})
     codebook      = _get_codebook(df)
     qnr_questions = server_store.get_val("qnr_questions") or []
+    overrides     = overrides or {}
+
+    _empty_ribbon = ([], None, "pct", {}, None)
 
     if not codebook or df is None:
-        return dbc.Alert("Complete Variable Mapping first.", color="info"), ""
+        return (dbc.Alert("Complete Variable Mapping and load data first.", color="info"),
+                [], *_empty_ribbon)
 
-    cols_per_row = int(cols_per_row or 2)
-    type_filter  = type_filter or []
-    overrides    = overrides or {}
-
+    type_filter = type_filter or []
     included = [t for t in codebook
                 if t.get("include") and t.get("dataset_col")
                 and t["dataset_col"] in df.columns]
-
-    visible = [
+    visible  = [
         t for t in included
         if t["var_type"] in type_filter
         and (not search
@@ -726,149 +779,174 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col, ove
              or search.lower() in t.get("question", "").lower())
     ]
 
-    summary = f"Showing {len(visible)} of {len(included)} variables"
-    if breakout_col and breakout_col != "None":
-        summary += f"  |  Breakout: {breakout_col}"
+    # ── Build nav list ────────────────────────────────────────────────────
+    # If selected code is no longer visible, pick the first visible
+    visible_codes = {t["code"] for t in visible}
+    if not selected_code or selected_code not in visible_codes:
+        selected_code = visible[0]["code"] if visible else None
 
-    if not visible:
-        return dbc.Alert("No variables match the current filters.", color="info"), summary
-
-    breakout_series = (df[breakout_col]
-                       if breakout_col and breakout_col != "None"
-                       and breakout_col in df.columns
-                       else None)
-
-    chart_rows = []
-    row_cols   = []
-
+    nav_items = []
     for tile in visible:
-        code       = tile["code"]
-        q_text     = tile.get("question", "").strip()
-        var_type   = tile.get("var_type", "categorical")
-        chart_opts = CHART_OPTIONS.get(var_type, ["Bar chart"])
-
-        # Default chart type
-        if _is_scale_grid(tile) or tile.get("group_type") == "grid":
-            default_ct = "Box Stack"
-        else:
-            default_ct = chart_opts[0]   # first option is the recommended default
-
-        chosen_ct = overrides.get(code, default_ct)
-        if chosen_ct not in chart_opts:
-            chosen_ct = default_ct
-
-        # Per-tile show_pct (default: % for non-numeric, n/a for numeric)
-        show_pct_default = "pct" if var_type != "numeric" else "count"
-        show_pct = (overrides.get(f"{code}__pct", show_pct_default) == "pct")
-
-        scale_note = ""
-        if tile.get("scale_low") and tile.get("scale_high"):
-            sp = tile.get("scale_points", "")
-            scale_note = f"1 = {tile['scale_low']}  →  {sp} = {tile['scale_high']}"
-
-        try:
-            fig = _dispatch(df, tile, qnr_questions, show_pct,
-                            chart_type_override=chosen_ct,
-                            breakout=breakout_series)
-
-            # Numeric mean and 100% stacked bar are shorter
-            if var_type == "numeric" and chosen_ct == "Mean":
-                h = 220
-            elif chosen_ct == "100% Stacked bar":
-                h = 190
-            elif _is_scale_grid(tile) or tile.get("group_type") == "grid":
-                h = 360
-            else:
-                h = 320
-
-            fig.update_layout(
-                height=h,
-                margin=dict(t=30, b=10, l=30, r=20),
-                font=dict(size=10),
-                paper_bgcolor="white",
-                plot_bgcolor="white",
-            )
-            graph = dcc.Graph(figure=fig,
-                              config={"displayModeBar": False},
-                              style={"height": f"{h + 10}px"})
-        except Exception as exc:
-            graph = dbc.Alert(f"Chart error: {exc}", color="danger")
-
-        # Per-tile controls row
-        controls = [
-            dbc.RadioItems(
-                id={"type": "cp2c-ct", "index": code},
-                options=[{"label": o, "value": o} for o in chart_opts],
-                value=chosen_ct,
-                inline=True,
-                style={"fontSize": "0.72rem"},
-            ),
-        ]
-        # Count/% toggle — hide for numeric (mean display)
-        if var_type in _PCT_TOGGLE_TYPES:
-            controls.append(
-                dbc.RadioItems(
-                    id={"type": "cp2c-pct-tile", "index": code},
-                    options=[{"label": "Count", "value": "count"},
-                             {"label": "%",     "value": "pct"}],
-                    value="pct" if show_pct else "count",
-                    inline=True,
-                    style={"fontSize": "0.72rem", "marginLeft": "12px"},
-                )
-            )
-        # Slide number input
-        controls.append(
+        code      = tile["code"]
+        q_short   = tile.get("question", "")[:50]
+        is_active = (code == selected_code)
+        nav_items.append(
             html.Div([
-                html.Small("Slide #", style={"color": "#6b7280", "marginRight": "4px"}),
-                dbc.Input(
-                    id={"type": "cp2c-slide", "index": code},
-                    type="number", min=1, step=1,
-                    placeholder="—",
-                    value=overrides.get(code + "__slide"),
-                    size="sm",
-                    style={"width": "64px", "display": "inline-block",
-                           "padding": "1px 4px", "fontSize": "0.72rem"},
-                ),
-            ], style={"marginLeft": "auto", "display": "flex",
-                      "alignItems": "center", "whiteSpace": "nowrap"})
+                html.Span(code, style={
+                    "fontWeight": "700" if is_active else "600",
+                    "fontSize": "0.78rem",
+                    "color": "#1e3a8a" if is_active else "#374151",
+                }),
+                html.Div(q_short, style={
+                    "fontSize": "0.69rem", "color": "#6b7280",
+                    "marginTop": "1px", "lineHeight": "1.25",
+                }),
+            ],
+            id={"type": "cp2c-nav-item", "index": code},
+            n_clicks=0,
+            style={
+                "padding": "7px 10px 7px 12px",
+                "cursor": "pointer",
+                "borderLeft": f"3px solid {'#3a6df0' if is_active else 'transparent'}",
+                "backgroundColor": "#e8edfb" if is_active else "transparent",
+                "userSelect": "none",
+            })
         )
+    nav_div = html.Div(nav_items) if nav_items else html.Small(
+        "No questions match filters.", className="text-muted d-block p-2")
 
-        card = dbc.Card(dbc.CardBody([
-            html.Div([
-                html.Div([
-                    html.Strong(code),
-                    html.Span(f" — {q_text}",
-                              style={"fontSize": "0.82rem", "color": "#374151"}),
-                ]),
-                html.Button(
-                    [html.I(className="bi bi-table me-1"), "Data"],
-                    id={"type": "cp2c-raw-btn", "index": code},
-                    title="View raw data used for this chart",
-                    n_clicks=0,
-                    style={"fontSize": "0.72rem", "padding": "2px 8px",
-                           "borderRadius": "4px", "border": "1px solid #d1d5db",
-                           "background": "#f9fafb", "color": "#374151",
-                           "cursor": "pointer", "whiteSpace": "nowrap",
-                           "flexShrink": "0"},
-                ),
-            ], className="d-flex justify-content-between align-items-start mb-1"),
-            html.Small(scale_note, className="text-muted d-block mb-1")
-            if scale_note else None,
-            html.Div(controls, className="d-flex align-items-center flex-wrap mb-1"),
-            graph,
-        ]), className="mb-3 h-100")
+    if not visible or not selected_code:
+        return (dbc.Alert("No questions match the current filters.", color="info"),
+                nav_div, *_empty_ribbon)
 
-        row_cols.append(dbc.Col(card, width=12 // cols_per_row))
-        if len(row_cols) >= cols_per_row:
-            chart_rows.append(dbc.Row(row_cols, className="mb-1"))
-            row_cols = []
+    # ── Resolve tile ──────────────────────────────────────────────────────
+    tile = next((t for t in visible if t["code"] == selected_code), None)
+    if not tile:
+        return (dbc.Alert("Select a question.", color="info"), nav_div, *_empty_ribbon)
 
-    if row_cols:
-        chart_rows.append(dbc.Row(row_cols))
+    var_type   = tile.get("var_type", "categorical")
+    chart_opts = CHART_OPTIONS.get(var_type, ["Bar chart"])
 
-    return html.Div(chart_rows), summary
+    if _is_scale_grid(tile) or tile.get("group_type") == "grid":
+        default_ct = "Box Stack"
+    else:
+        default_ct = chart_opts[0]
+
+    chosen_ct = overrides.get(selected_code, default_ct)
+    if chosen_ct not in chart_opts:
+        chosen_ct = default_ct
+
+    default_pct = "pct" if var_type != "numeric" else "count"
+    pct_val     = overrides.get(f"{selected_code}__pct", default_pct)
+    slide_val   = overrides.get(f"{selected_code}__slide")
+    show_pct    = (pct_val == "pct")
+
+    pct_style   = {} if var_type in _PCT_TOGGLE_TYPES else {"display": "none"}
+
+    # ── Render chart ──────────────────────────────────────────────────────
+    breakout_series = (
+        df[breakout_col]
+        if breakout_col and breakout_col != "None" and breakout_col in df.columns
+        else None
+    )
+    scale_note = ""
+    if tile.get("scale_low") and tile.get("scale_high"):
+        sp = tile.get("scale_points", "")
+        scale_note = f"1 = {tile['scale_low']}  →  {sp} = {tile['scale_high']}"
+
+    try:
+        fig = _dispatch(df, tile, qnr_questions, show_pct,
+                        chart_type_override=chosen_ct,
+                        breakout=breakout_series)
+        if var_type == "numeric" and chosen_ct == "Mean":
+            h = 300
+        elif chosen_ct == "100% Stacked bar":
+            h = 260
+        elif _is_scale_grid(tile) or tile.get("group_type") == "grid":
+            h = max(420, len(tile.get("all_cols", [])) * 40 + 100)
+        elif tile.get("group_type") == "multi":
+            h = max(380, len(tile.get("all_cols", [])) * 34 + 80)
+        else:
+            h = 500
+
+        fig.update_layout(
+            height=h,
+            margin=dict(t=30, b=40, l=50, r=30),
+            font=dict(size=11),
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+        )
+        graph = dcc.Graph(
+            figure=fig,
+            config={"displayModeBar": True, "displaylogo": False,
+                    "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
+            style={"height": f"{h + 10}px"},
+        )
+    except Exception as exc:
+        graph = dbc.Alert(f"Chart error: {exc}", color="danger")
+
+    q_text_full = tile.get("question", "")
+    chart_area  = html.Div([
+        # Question title
+        html.Div([
+            html.Span(selected_code, style={
+                "fontWeight": "700", "color": "#1e3a8a",
+                "fontSize": "1rem", "marginRight": "8px",
+            }),
+            html.Span(q_text_full, style={"fontSize": "0.9rem", "color": "#374151"}),
+            html.Small(f" [{var_type}]", style={"color": "#9ca3af", "marginLeft": "6px"}),
+            html.Div(scale_note, style={
+                "fontSize": "0.76rem", "color": "#6b7280", "marginTop": "3px",
+            }) if scale_note else None,
+        ], style={
+            "marginBottom": "12px",
+            "borderBottom": "1px solid #e5e7eb",
+            "paddingBottom": "8px",
+        }),
+        graph,
+    ])
+
+    ribbon_opts = [{"label": o, "value": o} for o in chart_opts]
+    return chart_area, nav_div, ribbon_opts, chosen_ct, pct_val, pct_style, slide_val
 
 
+# ── 3. Save ribbon settings to overrides ─────────────────────────────────────
+@callback(
+    Output("cp2c-overrides", "data"),
+    Input("cp2c-ribbon-ct",    "value"),
+    Input("cp2c-ribbon-pct",   "value"),
+    Input("cp2c-ribbon-slide", "value"),
+    State("cp2c-selected-code", "data"),
+    State("cp2c-overrides",    "data"),
+    prevent_initial_call=True,
+)
+def update_overrides_from_ribbon(ct_val, pct_val, slide_val, selected_code, current):
+    if not selected_code:
+        return no_update
+    overrides = dict(current or {})
+    changed   = False
+
+    if ct_val and overrides.get(selected_code) != ct_val:
+        overrides[selected_code] = ct_val
+        changed = True
+
+    if pct_val and overrides.get(f"{selected_code}__pct") != pct_val:
+        overrides[f"{selected_code}__pct"] = pct_val
+        changed = True
+
+    new_slide = int(slide_val) if slide_val not in (None, "") else None
+    cur_slide = overrides.get(f"{selected_code}__slide")
+    if new_slide != cur_slide:
+        if new_slide is None:
+            overrides.pop(f"{selected_code}__slide", None)
+        else:
+            overrides[f"{selected_code}__slide"] = new_slide
+        changed = True
+
+    return overrides if changed else no_update
+
+
+# ── 4. Export PPT ─────────────────────────────────────────────────────────────
 @callback(
     Output("cp2c-download",      "data"),
     Output("cp2c-export-status", "children"),
@@ -880,9 +958,6 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col, ove
     prevent_initial_call=True,
 )
 def export_ppt(n_clicks, type_filter, search, overrides, state):
-    if not n_clicks:
-        return no_update, no_update
-
     df            = _get_df(state or {})
     codebook      = _get_codebook(df)
     qnr_questions = server_store.get_val("qnr_questions") or []
@@ -913,35 +988,31 @@ def export_ppt(n_clicks, type_filter, search, overrides, state):
             dbc.Alert("PPT ready — downloading…", color="success", duration=3000),
         )
     except Exception as exc:
-        return no_update, dbc.Alert(
-            f"PPT export error: {exc}. Install: pip install python-pptx",
-            color="danger",
-        )
+        return no_update, dbc.Alert(f"PPT export error: {exc}", color="danger")
 
 
+# ── 5. Raw data modal ─────────────────────────────────────────────────────────
 @callback(
-    Output("cp2c-raw-tile-code", "data"),
-    Output("cp2c-raw-modal",     "is_open"),
-    Input({"type": "cp2c-raw-btn", "index": ALL}, "n_clicks"),
+    Output("cp2c-raw-modal", "is_open"),
+    Input("cp2c-raw-btn",    "n_clicks"),
+    State("cp2c-raw-modal",  "is_open"),
     prevent_initial_call=True,
 )
-def open_raw_modal(n_clicks_list):
-    triggered = ctx.triggered_id
-    if not triggered or not any(n for n in (n_clicks_list or [])):
-        return no_update, no_update
-    return triggered["index"], True
+def toggle_raw_modal(n_clicks, is_open):
+    return not is_open if n_clicks else is_open
 
 
 @callback(
     Output("cp2c-raw-modal-title", "children"),
     Output("cp2c-raw-modal-body",  "children"),
-    Input("cp2c-raw-tile-code", "data"),
-    State("app-state", "data"),
+    Input("cp2c-raw-modal",       "is_open"),
+    State("cp2c-selected-code",   "data"),
+    State("app-state",            "data"),
     prevent_initial_call=True,
 )
-def populate_raw_modal(code, state):
-    if not code:
-        return "Raw Data", ""
+def populate_raw_modal(is_open, code, state):
+    if not is_open or not code:
+        return no_update, no_update
 
     df            = _get_df(state or {})
     codebook      = _get_codebook(df)
@@ -956,29 +1027,19 @@ def populate_raw_modal(code, state):
 
     all_cols = [c for c in tile.get("all_cols", []) if c in df.columns]
     if not all_cols:
-        return code, dbc.Alert("No data columns mapped for this question.", color="warning")
+        return code, dbc.Alert("No data columns mapped.", color="warning")
 
     raw = df[all_cols].copy()
-
-    # Apply value labels for single-column questions
     if len(all_cols) == 1:
         labels = _value_labels(tile, qnr_questions)
         if labels:
-            col = all_cols[0]
-            raw[col] = raw[col].map(lambda x: labels.get(str(x), x))
+            raw[all_cols[0]] = raw[all_cols[0]].map(lambda x: labels.get(str(x), x))
 
-    # Rename columns using option labels for multi-column questions
     col_map = _col_to_label(tile, qnr_questions)
-    raw = raw.rename(columns={c: col_map.get(c, c) for c in all_cols})
-
-    n_rows   = len(raw)
-    preview  = raw.head(500)
-    title    = f"{code} — {tile.get('question', '')[:80]}"
-    summary  = html.P(
-        f"Showing up to 500 of {n_rows} rows · {len(all_cols)} column(s)",
-        className="text-muted mb-2",
-        style={"fontSize": "0.8rem"},
-    )
+    raw     = raw.rename(columns={c: col_map.get(c, c) for c in all_cols})
+    n_rows  = len(raw)
+    preview = raw.head(500)
+    title   = f"{code} — {tile.get('question', '')[:80]}"
 
     table = dash_table.DataTable(
         data=preview.to_dict("records"),
@@ -990,9 +1051,11 @@ def populate_raw_modal(code, state):
                     "overflow": "hidden", "textOverflow": "ellipsis"},
         style_header={"fontWeight": "600", "background": "#f3f4f6",
                       "fontSize": "0.78rem", "borderBottom": "2px solid #d1d5db"},
-        style_data_conditional=[
-            {"if": {"row_index": "odd"}, "background": "#f9fafb"},
-        ],
+        style_data_conditional=[{"if": {"row_index": "odd"}, "background": "#f9fafb"}],
     )
 
-    return title, [summary, table]
+    return title, [
+        html.P(f"Showing up to 500 of {n_rows} rows · {len(all_cols)} column(s)",
+               className="text-muted mb-2", style={"fontSize": "0.8rem"}),
+        table,
+    ]
