@@ -179,7 +179,7 @@ def _data_100pct(series, tile, qnr_questions):
     return data, XL_CHART_TYPE.BAR_STACKED_100
 
 
-def _data_box_stack(df, tile, qnr_questions):
+def _data_box_stack(df, tile, qnr_questions, horizontal: bool = True):
     col_map    = _col_to_label(tile, qnr_questions)
     cols       = [c for c in tile.get("all_cols", []) if c in df.columns]
     if not cols:
@@ -187,7 +187,6 @@ def _data_box_stack(df, tile, qnr_questions):
     bar_labels = _clean_cats([col_map.get(c, c) for c in cols])
     var_type   = tile.get("var_type", "scale_7")
     if var_type not in _SCALE_GROUPS:
-        # Detect from data
         sample  = df[cols].apply(pd.to_numeric, errors="coerce")
         max_val = sample.max().max()
         var_type = "scale_7" if (pd.notna(max_val) and max_val > 5) else "scale_5"
@@ -201,7 +200,10 @@ def _data_box_stack(df, tile, qnr_questions):
             total = len(s)
             pcts.append(_f(s.isin(rating_vals).sum() / total * 100) if total else 0.0)
         data.add_series(_xml_safe(group_name), pcts)
-    return data, XL_CHART_TYPE.BAR_STACKED_100
+    # BAR_STACKED_100  = horizontal bars in pptx (items on y-axis)
+    # COLUMN_STACKED_100 = vertical bars (items on x-axis)
+    pptx_type = XL_CHART_TYPE.BAR_STACKED_100 if horizontal else XL_CHART_TYPE.COLUMN_STACKED_100
+    return data, pptx_type
 
 
 def _data_bar(series, tile, qnr_questions, show_pct, horizontal=False):
@@ -347,7 +349,11 @@ def _add_chart_block(slide, tile, df, overrides, qnr_questions,
 
     try:
         if (is_scale and is_multi_col) or g_type == "grid":
-            chart_data, pptx_type = _data_box_stack(df, tile, qnr_questions)
+            # "Box Stack H" → horizontal bars (BAR_STACKED_100 in pptx = horizontal)
+            # "Box Stack"   → vertical bars  (COLUMN_STACKED_100 = vertical)
+            horiz = (chosen_ct == "Box Stack H")
+            chart_data, pptx_type = _data_box_stack(df, tile, qnr_questions,
+                                                     horizontal=horiz)
             color_mode = "box"
 
         elif g_type == "multi" and is_multi_col:

@@ -25,10 +25,10 @@ CHART_OPTIONS = {
     "single":      ["100% Stacked bar", "Bar chart", "Horizontal bar", "Pie chart", "Donut chart"],
     "ordinal":     ["100% Stacked bar", "Bar chart", "Horizontal bar", "Line chart"],
     "numeric":     ["Mean", "Histogram", "Box plot", "Violin plot"],
-    "scale_7":     ["100% Stacked bar", "Box Stack", "Mean bar", "Bar chart", "Horizontal bar"],
-    "scale_5":     ["100% Stacked bar", "Box Stack", "Mean bar", "Bar chart", "Horizontal bar"],
+    "scale_7":     ["100% Stacked bar", "Box Stack", "Box Stack H", "Mean bar", "Bar chart", "Horizontal bar"],
+    "scale_5":     ["100% Stacked bar", "Box Stack", "Box Stack H", "Mean bar", "Bar chart", "Horizontal bar"],
     "multi":       ["Horizontal bar", "Bar chart"],
-    "grid":        ["Box Stack", "Mean bar", "Heatmap"],
+    "grid":        ["Box Stack", "Box Stack H", "Mean bar", "Heatmap"],
     "open":        ["Word count bar"],
 }
 
@@ -261,7 +261,7 @@ def _render_scale_grid(df, tile, chart_type, qnr_questions) -> go.Figure:
     col_map     = _col_to_label(tile, qnr_questions)
     cols        = [c for c in tile.get("all_cols", []) if c in df.columns]
     full_labels = [col_map.get(c, c) for c in cols]
-    bar_labels  = [_short(l) for l in full_labels]
+    bar_labels  = [_short(l) for l in full_labels]   # short for vertical
     var_type    = tile.get("var_type", "scale_7")
 
     if chart_type == "Mean bar":
@@ -284,8 +284,12 @@ def _render_scale_grid(df, tile, chart_type, qnr_questions) -> go.Figure:
                          labels=dict(x="Respondent", y="Item", color="Score"),
                          color_continuous_scale="Blues")
 
-    # Box Stack — default for scale grids
+    # ── Box Stack (vertical) or Box Stack H (horizontal) ─────────────────
+    horizontal = (chart_type == "Box Stack H")
+    # Use full labels (no truncation) when horizontal — there's enough room
+    labels_for_axis = full_labels if horizontal else bar_labels
     groups = _SCALE_GROUPS.get(var_type, _SCALE_GROUPS["scale_7"])
+
     fig = go.Figure()
     for group_name, rating_vals, color in groups:
         pcts = []
@@ -293,23 +297,50 @@ def _render_scale_grid(df, tile, chart_type, qnr_questions) -> go.Figure:
             s = pd.to_numeric(df[c], errors="coerce").dropna()
             total = len(s)
             pcts.append(s.isin(rating_vals).sum() / total * 100 if total else 0)
-        fig.add_trace(go.Bar(
-            name=group_name, x=bar_labels, y=pcts,
-            marker_color=color,
-            text=[f"{p:.0f}%" for p in pcts],
-            textposition="inside",
-            textfont=dict(color="white", size=9),
-            customdata=full_labels,
-            hovertemplate=(
-                "<b>%{customdata}</b><br>" + group_name + ": %{y:.1f}%<extra></extra>"
-            ),
-        ))
-    fig.update_layout(
-        barmode="stack",
-        yaxis=dict(title="% Respondents", range=[0, 105]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1),
-    )
+
+        if horizontal:
+            fig.add_trace(go.Bar(
+                name=group_name,
+                y=labels_for_axis, x=pcts,
+                orientation="h",
+                marker_color=color,
+                text=[f"{p:.0f}%" for p in pcts],
+                textposition="inside",
+                textfont=dict(color="white", size=9),
+                customdata=labels_for_axis,
+                hovertemplate=(
+                    "<b>%{customdata}</b><br>" + group_name + ": %{x:.1f}%<extra></extra>"
+                ),
+            ))
+        else:
+            fig.add_trace(go.Bar(
+                name=group_name,
+                x=labels_for_axis, y=pcts,
+                marker_color=color,
+                text=[f"{p:.0f}%" for p in pcts],
+                textposition="inside",
+                textfont=dict(color="white", size=9),
+                customdata=full_labels,
+                hovertemplate=(
+                    "<b>%{customdata}</b><br>" + group_name + ": %{y:.1f}%<extra></extra>"
+                ),
+            ))
+
+    if horizontal:
+        fig.update_layout(
+            barmode="stack",
+            xaxis=dict(title="% Respondents", range=[0, 105]),
+            yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
+            legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                        xanchor="right", x=1),
+        )
+    else:
+        fig.update_layout(
+            barmode="stack",
+            yaxis=dict(title="% Respondents", range=[0, 105]),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
+        )
     return fig
 
 
@@ -502,7 +533,7 @@ def _dispatch(df, tile, qnr_questions, show_pct=True,
 
     # Multi-column scale / grid → Box Stack renderer
     if (is_scale and is_multi_col) or g_type == "grid":
-        ct = chart_type if chart_type in ("Mean bar", "Heatmap") else "Box Stack"
+        ct = chart_type if chart_type in ("Mean bar", "Heatmap", "Box Stack H") else "Box Stack"
         return _render_scale_grid(df, tile, ct, qnr_questions)
 
     # Multi-select → bar per option (not summing to 100%)
@@ -858,14 +889,18 @@ def render_view(selected_code, overrides, type_filter, search, breakout_col, sta
         fig = _dispatch(df, tile, qnr_questions, show_pct,
                         chart_type_override=chosen_ct,
                         breakout=breakout_series)
+        n_items = len(tile.get("all_cols", []))
         if var_type == "numeric" and chosen_ct == "Mean":
             h = 300
         elif chosen_ct == "100% Stacked bar":
             h = 260
+        elif chosen_ct == "Box Stack H":
+            # Horizontal: auto-height per item so labels always fit
+            h = max(380, n_items * 38 + 120)
         elif _is_scale_grid(tile) or tile.get("group_type") == "grid":
-            h = max(420, len(tile.get("all_cols", [])) * 40 + 100)
+            h = max(420, n_items * 40 + 100)
         elif tile.get("group_type") == "multi":
-            h = max(380, len(tile.get("all_cols", [])) * 34 + 80)
+            h = max(380, n_items * 34 + 80)
         else:
             h = 500
 
