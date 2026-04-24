@@ -7,11 +7,19 @@ import re
 import zipfile
 import pandas as pd
 
+from lxml import etree
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION, XL_LABEL_POSITION
 from pptx.dml.color import RGBColor
+
+# ── XML namespaces used in chart elements ─────────────────────────────────────
+_NSMAP = {
+    "c":  "http://schemas.openxmlformats.org/drawingml/2006/chart",
+    "a":  "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "r":  "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+}
 
 # ── Slide dimensions (widescreen 16:9) ────────────────────────────────────────
 _W       = Inches(13.33)
@@ -384,6 +392,13 @@ def _add_chart_block(slide, tile, df, overrides, qnr_questions,
     try:
         sp    = slide.shapes.add_chart(pptx_type, left, top, width, height, chart_data)
         chart = sp.chart
+
+        # Fix OOXML compliance issues in-place (negative axIds, missing lang)
+        try:
+            _fix_chart_elem(chart._element)
+        except Exception:
+            pass
+
         _style_chart(chart, color_mode)
         inside = pptx_type in (XL_CHART_TYPE.BAR_STACKED_100,
                                XL_CHART_TYPE.COLUMN_STACKED_100)
@@ -427,52 +442,42 @@ def _blank_layout(prs):
     return prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
 
 
-def _fix_pptx_buf(raw_buf: io.BytesIO) -> io.BytesIO:
+def _fix_chart_elem(chart_elem):
     """
-    Post-process the PPTX buffer to fix issues that python-pptx generates
-    but PowerPoint's strict OOXML parser rejects:
+    Fix OOXML compliance issues directly in the lxml chart element tree,
+    before python-pptx serialises it.  Must be called after add_chart().
 
-    1. Negative axId values — OOXML requires xsd:unsignedInt (≥ 0).
-       python-pptx sometimes generates negative signed-32-bit values.
-       Fix: convert to unsigned by adding 2^32.
-
-    2. Any leftover XML control characters in chart/slide XML that
-       _xml_safe() might have missed (belt-and-suspenders).
+    Fixes applied:
+    1. Negative c:axId / c:crossAx val attributes  →  unsigned 32-bit equivalent.
+       OOXML schema requires xsd:unsignedInt (≥ 0) but python-pptx generates
+       negative signed-32-bit values that PowerPoint's validator rejects.
+    2. Add <c:lang val="en-US"/> inside <c:chartSpace> if absent.
+       PowerPoint silently removes charts that lack this element.
     """
-    raw_buf.seek(0)
-    src = zipfile.ZipFile(raw_buf, "r")
+    C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
 
-    out_buf = io.BytesIO()
-    with zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as dst:
-        for name in src.namelist():
-            data = src.read(name)
+    # ── Fix 1: negative axis IDs ─────────────────────────────────────────
+    for tag in (f"{{{C}}}axId", f"{{{C}}}crossAx"):
+        for el in chart_elem.iter(tag):
+            raw = el.get("val", "")
+            try:
+                v = int(raw)
+                if v < 0:
+                    el.set("val", str(v + 2 ** 32))
+            except ValueError:
+                pass
 
-            # Only patch XML files (chart XML is the critical one)
-            if name.endswith(".xml") or name.endswith(".rels"):
-                try:
-                    text = data.decode("utf-8")
-
-                    # Fix 1 — negative axId / axId-like values
-                    def _to_unsigned(m):
-                        v = int(m.group(1))
-                        if v < 0:
-                            v += 2 ** 32
-                        return f'val="{v}"'
-
-                    text = re.sub(r'val="(-\d+)"', _to_unsigned, text)
-
-                    # Fix 2 — strip any stray XML control chars
-                    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
-
-                    data = text.encode("utf-8")
-                except Exception:
-                    pass  # Leave binary files untouched
-
-            dst.writestr(name, data)
-
-    src.close()
-    out_buf.seek(0)
-    return out_buf
+    # ── Fix 2: ensure <c:lang> is present ───────────────────────────────
+    # It must appear right after <c:date1904> / before <c:chart>
+    chart_space = chart_elem  # chart_elem is already <c:chartSpace>
+    lang_tag = f"{{{C}}}lang"
+    if chart_space.find(lang_tag) is None:
+        lang_el = etree.SubElement(chart_space, lang_tag)
+        lang_el.set("val", "en-US")
+        # Move it to index 1 (after date1904, before <c:chart>)
+        chart_space.remove(lang_el)
+        insert_at = 1
+        chart_space.insert(insert_at, lang_el)
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -506,8 +511,7 @@ def build_pptx(visible: list, df, overrides: dict, qnr_questions: list) -> io.By
             _add_chart_block(slide, tile, df, overrides, qnr_questions,
                              left, top, width, height)
 
-    raw = io.BytesIO()
-    prs.save(raw)
-
-    # Post-process: fix OOXML compliance issues before sending to browser
-    return _fix_pptx_buf(raw)
+    buf = io.BytesIO()
+    prs.save(buf)
+    buf.seek(0)
+    return buf
