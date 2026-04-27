@@ -36,7 +36,7 @@ VAR_TYPE_OPTIONS = [
 
 DEFAULT_VM_STATE = {
     "deleted": [], "type_overrides": {}, "reassigned": {}, "option_assignments": {},
-    "deleted_questions": [], "deleted_options": {},
+    "deleted_questions": [], "deleted_options": {}, "extra_options": {},
 }
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -317,7 +317,15 @@ def _render_var_table(
         )
 
     # Unassigned options pool (options not yet placed on any row)
-    q_opts       = [o for o in (q.get("options", []) if q else []) if o not in del_opts]
+    extra_opts   = vm_state.get("extra_options", {}).get(code, [])
+    q_opts_base  = list(q.get("options", []) if q else [])
+    # Append extra (imported/manually added) options, deduped
+    seen_opts: set = set(q_opts_base)
+    for o in extra_opts:
+        if o not in seen_opts:
+            q_opts_base.append(o)
+            seen_opts.add(o)
+    q_opts       = [o for o in q_opts_base if o not in del_opts]
     assigned_set = {o for col, _, _ in col_roles for o in opt_for(col)}
     pool         = [o for o in q_opts if o not in assigned_set]
 
@@ -347,14 +355,22 @@ def _render_var_table(
                 html.Span("unassigned",
                           style={"color": "#9ca3af", "fontSize": "0.74rem",
                                  "fontStyle": "italic", "marginRight": "6px"}),
-                # "Add options" toggle button
                 html.Button(
                     "+ Add",
                     className="vm-add-opts-btn",
                     **{"data-qcode": safe_code},
                     title="Add custom options by typing or pasting",
                 ),
-            ], style={"display": "flex", "alignItems": "center"}),
+                dcc.Dropdown(
+                    id={"type": "vm-import-from-sel", "index": code},
+                    options=[{"label": c, "value": c} for c in all_q_codes if c != code],
+                    placeholder="Import from…",
+                    clearable=True,
+                    style={"fontSize": "0.72rem", "minWidth": "130px",
+                           "display": "inline-block", "marginLeft": "6px"},
+                ),
+            ], style={"display": "flex", "alignItems": "center", "flexWrap": "wrap",
+                      "gap": "4px"}),
             style={"padding": "5px 8px", "background": "#f9fafb",
                    "verticalAlign": "middle", "width": "180px"},
         ),
@@ -381,6 +397,7 @@ def _render_var_table(
         html.Td(
             html.Div([
                 html.Textarea(
+                    id={"type": "vm-opts-textarea", "index": code},
                     placeholder="Paste here…\nOne option per line",
                     className="vm-opts-textarea",
                     **{"data-qcode": safe_code},
@@ -388,7 +405,9 @@ def _render_var_table(
                 ),
                 html.Button(
                     "Add to pool",
+                    id={"type": "vm-opts-add-btn", "index": code},
                     className="vm-opts-add-btn",
+                    n_clicks=0,
                     **{"data-qcode": safe_code},
                 ),
             ]),
@@ -1174,3 +1193,86 @@ def reset_vm_state(n):
     if n:
         return DEFAULT_VM_STATE, [], [], {}
     return no_update, no_update, no_update, no_update
+
+
+@callback(
+    Output("vm-state", "data", allow_duplicate=True),
+    Input({"type": "vm-import-from-sel", "index": ALL}, "value"),
+    State({"type": "vm-import-from-sel", "index": ALL}, "id"),
+    State("vm-state", "data"),
+    prevent_initial_call=True,
+)
+def import_options_from_question(values, ids, vm_state):
+    triggered = ctx.triggered_id
+    if not triggered or not isinstance(triggered, dict):
+        return no_update
+    target_code = triggered["index"]
+    # Find which value changed
+    src_code = None
+    for val, id_ in zip(values, ids):
+        if id_["index"] == target_code:
+            src_code = val
+            break
+    if not src_code:
+        return no_update
+
+    questions = server_store.get_val("qnr_questions", [])
+    src_opts = next((q.get("options", []) for q in questions
+                     if q["code"].upper() == src_code.upper()), [])
+    if not src_opts:
+        return no_update
+
+    state = dict(vm_state or DEFAULT_VM_STATE)
+    extra = dict(state.get("extra_options", {}))
+    existing = list(extra.get(target_code, []))
+    seen_set = set(existing)
+    for o in src_opts:
+        if o not in seen_set:
+            existing.append(o)
+            seen_set.add(o)
+    extra[target_code] = existing
+    state["extra_options"] = extra
+    return state
+
+
+@callback(
+    Output("vm-state", "data", allow_duplicate=True),
+    Input({"type": "vm-opts-add-btn", "index": ALL}, "n_clicks"),
+    State({"type": "vm-opts-textarea", "index": ALL}, "value"),
+    State({"type": "vm-opts-textarea", "index": ALL}, "id"),
+    State({"type": "vm-opts-add-btn", "index": ALL}, "id"),
+    State("vm-state", "data"),
+    prevent_initial_call=True,
+)
+def add_options_to_pool(n_clicks_list, textarea_vals, textarea_ids, btn_ids, vm_state):
+    triggered = ctx.triggered_id
+    if not triggered or not isinstance(triggered, dict):
+        return no_update
+    target_code = triggered["index"]
+    if not any(n for n in (n_clicks_list or [])):
+        return no_update
+
+    # Find textarea value for the triggered question
+    textarea_val = None
+    for val, id_ in zip(textarea_vals, textarea_ids):
+        if id_["index"] == target_code:
+            textarea_val = val
+            break
+    if not textarea_val or not textarea_val.strip():
+        return no_update
+
+    new_opts = [o.strip() for o in textarea_val.splitlines() if o.strip()]
+    if not new_opts:
+        return no_update
+
+    state = dict(vm_state or DEFAULT_VM_STATE)
+    extra = dict(state.get("extra_options", {}))
+    existing = list(extra.get(target_code, []))
+    seen_set = set(existing)
+    for o in new_opts:
+        if o not in seen_set:
+            existing.append(o)
+            seen_set.add(o)
+    extra[target_code] = existing
+    state["extra_options"] = extra
+    return state

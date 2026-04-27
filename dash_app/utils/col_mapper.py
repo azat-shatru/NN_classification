@@ -326,12 +326,19 @@ def _overlap_score(a_norm: str, b_norm: str) -> float:
     """
     if not a_norm or not b_norm:
         return 0.0
-    if a_norm == b_norm or a_norm in b_norm or b_norm in a_norm:
+    if a_norm == b_norm:
         return 1.0
+    # Word-boundary containment: require whole-token match to avoid
+    # "p1" matching inside "p10", "p11", etc.
     wa = set(a_norm.split())
     wb = set(b_norm.split())
     if not wa or not wb:
         return 0.0
+    if wa == wb:
+        return 1.0
+    # Containment only when one side is entirely made of whole words of the other
+    if wa <= wb or wb <= wa:
+        return 0.95
     return len(wa & wb) / min(len(wa), len(wb))
 
 
@@ -346,10 +353,9 @@ def _best_qnr_match(ce_norm: str, qnr_norms: list, qnr_opts: list,
     best_opt, best_score = None, 0.0
     for opt, norm_o in zip(qnr_opts, qnr_norms):
         score = _overlap_score(ce_norm, norm_o)
-        if score > best_score:
+        # Prefer longer/more specific match on equal score
+        if score > best_score or (score == best_score and best_opt is not None and len(norm_o) > len(_norm_text(best_opt))):
             best_score, best_opt = score, opt
-        if score >= 1.0:
-            return opt, score
     if best_score >= threshold:
         return best_opt, best_score
     return None, best_score
