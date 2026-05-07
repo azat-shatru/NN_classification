@@ -664,22 +664,31 @@ def layout(state: dict) -> html.Div:
 
     return html.Div([
         header,
-        dcc.Store(id="cp2c-overrides",   data={}, storage_type="session"),
-        dcc.Store(id="cp2c-slide-order", data=[], storage_type="session"),
+        dcc.Store(id="cp2c-overrides",    data={}, storage_type="session"),
+        dcc.Store(id="cp2c-slide-order",  data=[], storage_type="session"),
+        dcc.Store(id="cp2c-card-order",   data=[], storage_type="session"),
         dcc.Store(id="cp2c-raw-tile-code", storage_type="memory"),
 
-        # Floating Apply button
-        html.Div(
+        # Floating buttons (Apply + Save Card Order)
+        html.Div([
             dbc.Button(
                 [html.I(className="bi bi-check-lg me-1"), "Apply"],
                 id="cp2c-apply-btn",
                 color="primary",
                 n_clicks=0,
                 title="Apply current filters and re-render charts",
+                className="me-2",
             ),
-            style={"position": "fixed", "top": "18px", "right": "36px",
-                   "zIndex": 9999},
-        ),
+            dbc.Button(
+                [html.I(className="bi bi-grip-vertical me-1"), "Save Order"],
+                id="cp2c-save-card-order-btn",
+                color="secondary",
+                outline=True,
+                n_clicks=0,
+                title="Save the current drag-and-drop card order",
+            ),
+        ], style={"position": "fixed", "top": "18px", "right": "36px",
+                  "zIndex": 9999, "display": "flex"}),
 
         # Raw-data modal (shared; populated on demand)
         dbc.Modal([
@@ -810,17 +819,18 @@ def update_overrides(ct_vals, pct_vals, slide_vals, ct_ids, pct_ids, slide_ids, 
     Output("cp2c-charts-grid", "children"),
     Output("cp2c-summary",     "children"),
     Output("cp2c-slide-rows",  "children"),
-    Input("cp2c-apply-btn",  "n_clicks"),
+    Input("cp2c-apply-btn",   "n_clicks"),
     State("cp2c-types",        "value"),
     State("cp2c-search",       "value"),
     State("cp2c-cols",         "value"),
     State("cp2c-breakout",     "value"),
     State("cp2c-overrides",    "data"),
     State("cp2c-slide-order",  "data"),
+    State("cp2c-card-order",   "data"),
     State("app-state",         "data"),
 )
 def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col,
-                  overrides, slide_order, state):
+                  overrides, slide_order, card_order, state):
     df            = _get_df(state or {})
     codebook      = _get_codebook(df)
     qnr_questions = server_store.get_val("qnr_questions") or []
@@ -851,13 +861,18 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col,
     if not visible:
         return dbc.Alert("No variables match the current filters.", color="info"), summary, []
 
+    # Honour user's drag-and-drop card order; new/unordered tiles go at the end
+    if card_order:
+        order_map = {code: i for i, code in enumerate(card_order)}
+        visible.sort(key=lambda t: order_map.get(t["code"], len(card_order)))
+
     breakout_series = (df[breakout_col]
                        if breakout_col and breakout_col != "None"
                        and breakout_col in df.columns
                        else None)
 
-    chart_rows = []
-    row_cols   = []
+    card_divs  = []
+    col_width  = f"calc({100 / cols_per_row:.4f}% - {16 * (cols_per_row - 1) / cols_per_row:.1f}px)"
 
     for tile in visible:
         code       = tile["code"]
@@ -954,10 +969,19 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col,
         card = dbc.Card(dbc.CardBody([
             html.Div([
                 html.Div([
+                    # Drag handle — visible affordance
+                    html.Span(
+                        "⠿",
+                        title="Drag to reorder",
+                        style={"cursor": "grab", "fontSize": "1.1rem",
+                               "color": "#d1d5db", "marginRight": "6px",
+                               "userSelect": "none", "flexShrink": "0"},
+                    ),
                     html.Strong(code),
                     html.Span(f" — {q_text}",
                               style={"fontSize": "0.82rem", "color": "#374151"}),
-                ]),
+                ], style={"display": "flex", "alignItems": "center",
+                          "minWidth": "0", "overflow": "hidden"}),
                 html.Button(
                     [html.I(className="bi bi-table me-1"), "Data"],
                     id={"type": "cp2c-raw-btn", "index": code},
@@ -974,18 +998,48 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col,
             if scale_note else None,
             html.Div(controls, className="d-flex align-items-center flex-wrap mb-1"),
             graph,
-        ]), className="mb-3 h-100")
+        ]))
 
-        row_cols.append(dbc.Col(card, width=12 // cols_per_row))
-        if len(row_cols) >= cols_per_row:
-            chart_rows.append(dbc.Row(row_cols, className="mb-1"))
-            row_cols = []
+        card_divs.append(
+            html.Div(
+                card,
+                className="cp2c-chart-card",
+                draggable="true",
+                **{"data-code": code},
+                style={"width": col_width, "boxSizing": "border-box",
+                       "marginBottom": "16px"},
+            )
+        )
 
-    if row_cols:
-        chart_rows.append(dbc.Row(row_cols))
+    cards_container = html.Div(
+        card_divs,
+        id="cp2c-cards-container",
+        style={"display": "flex", "flexWrap": "wrap", "gap": "16px",
+               "alignItems": "flex-start"},
+    )
 
     slide_rows = _build_slide_rows(visible, overrides or {}, slide_order or [])
-    return html.Div(chart_rows), summary, slide_rows
+    return cards_container, summary, slide_rows
+
+
+# Clientside: read DOM order of .cp2c-chart-card elements → persist to store
+clientside_callback(
+    """
+    function(n_clicks) {
+        if (!n_clicks) return window.dash_clientside.no_update;
+        var cards = document.querySelectorAll('#cp2c-cards-container .cp2c-chart-card');
+        var order = [];
+        cards.forEach(function(c) {
+            var code = c.getAttribute('data-code');
+            if (code) order.push(code);
+        });
+        return order.length > 0 ? order : window.dash_clientside.no_update;
+    }
+    """,
+    Output("cp2c-card-order", "data"),
+    Input("cp2c-save-card-order-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
 
 
 # Clientside: read DOM order of .slide-order-row elements → persist to store
