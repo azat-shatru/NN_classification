@@ -97,6 +97,7 @@ NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 24
 - Each card has `draggable="true"`, `data-code` attr, and a `⠿` drag handle in the header
 - **Save Order** button (top-right, next to Apply): clientside callback reads DOM `.cp2c-chart-card` order → saves list of codes to `cp2c-card-order` session store
 - `render_charts` sorts `visible` tiles by stored card order before rendering; new/unordered tiles appended at end
+- Card height fix: container uses `align-items:stretch`; each card wrapper is `display:flex; flex-direction:column`; `dbc.Card` has `height:100%` — all cards in a row stretch to match the tallest, preventing size inconsistency after reorder
 
 #### Slide reorder
 - `assets/slide_order_dnd.js`: HTML5 drag-and-drop for `.slide-order-row` elements in the Export card
