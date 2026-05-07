@@ -998,7 +998,7 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col,
             if scale_note else None,
             html.Div(controls, className="d-flex align-items-center flex-wrap mb-1"),
             graph,
-        ]))
+        ]), style={"height": "100%"})
 
         card_divs.append(
             html.Div(
@@ -1007,7 +1007,7 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col,
                 draggable="true",
                 **{"data-code": code},
                 style={"width": col_width, "boxSizing": "border-box",
-                       "marginBottom": "16px"},
+                       "display": "flex", "flexDirection": "column"},
             )
         )
 
@@ -1015,7 +1015,7 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col,
         card_divs,
         id="cp2c-cards-container",
         style={"display": "flex", "flexWrap": "wrap", "gap": "16px",
-               "alignItems": "flex-start"},
+               "alignItems": "stretch"},
     )
 
     slide_rows = _build_slide_rows(visible, overrides or {}, slide_order or [])
