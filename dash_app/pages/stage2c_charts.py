@@ -8,7 +8,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 
-from dash import dcc, html, Input, Output, State, callback, no_update, ALL, ctx, dash_table
+from dash import (dcc, html, Input, Output, State, callback, clientside_callback,
+                  no_update, ALL, ctx, dash_table)
 import dash_bootstrap_components as dbc
 
 import sys, os
@@ -540,6 +541,96 @@ def _dispatch(df, tile, qnr_questions, show_pct=True,
     return fig
 
 
+# ── Slide order helpers ───────────────────────────────────────────────────────
+
+def _effective_slide_groups(visible: list, overrides: dict) -> dict:
+    """Return {slide_num: [tile, ...]} using the same logic as build_pptx."""
+    groups: dict[int, list] = {}
+    for i, tile in enumerate(visible, start=1):
+        raw = overrides.get(tile["code"] + "__slide")
+        try:
+            slide_num = int(float(raw)) if raw not in (None, "") else i
+        except (ValueError, TypeError):
+            slide_num = i
+        groups.setdefault(slide_num, []).append(tile)
+    return groups
+
+
+def _build_slide_rows(visible: list, overrides: dict, current_order: list):
+    """Build draggable slide-order rows for the Export panel."""
+    if not visible:
+        return html.P("Click Apply to see charts, then slide assignments will appear here.",
+                      className="text-muted", style={"fontSize": "0.82rem"})
+
+    groups = _effective_slide_groups(visible, overrides)
+    if not groups:
+        return []
+
+    # Respect the confirmed order; append any new slide numbers at the end
+    if current_order:
+        ordered   = [k for k in current_order if k in groups]
+        remaining = [k for k in sorted(groups.keys()) if k not in ordered]
+        display   = ordered + remaining
+    else:
+        display = sorted(groups.keys())
+
+    rows = []
+    for slide_num in display:
+        tiles = groups[slide_num]
+        chips = [
+            html.Span(
+                f"{t['code']}: {t.get('question', '')[:35]}"
+                + ("…" if len(t.get("question", "")) > 35 else ""),
+                style={
+                    "background": "#e0e7ff", "borderRadius": "3px",
+                    "padding": "2px 7px", "fontSize": "0.72rem",
+                    "marginRight": "4px", "display": "inline-block",
+                    "whiteSpace": "nowrap",
+                },
+            )
+            for t in tiles
+        ]
+        rows.append(
+            html.Div(
+                [
+                    html.Span(
+                        "⠿",
+                        title="Drag to reorder",
+                        style={
+                            "cursor": "grab", "fontSize": "1.15rem",
+                            "color": "#9ca3af", "marginRight": "10px",
+                            "userSelect": "none", "flexShrink": "0",
+                        },
+                    ),
+                    html.Span(
+                        f"Slide {slide_num}",
+                        style={
+                            "fontWeight": "600", "minWidth": "62px",
+                            "marginRight": "10px", "fontSize": "0.82rem",
+                            "flexShrink": "0",
+                        },
+                    ),
+                    html.Div(
+                        chips,
+                        style={"display": "flex", "flexWrap": "wrap", "gap": "3px"},
+                    ),
+                ],
+                className="slide-order-row",
+                draggable="true",
+                **{"data-slide-num": str(slide_num)},
+                style={
+                    "display": "flex", "alignItems": "center",
+                    "padding": "6px 10px", "marginBottom": "4px",
+                    "background": "#f9fafb", "border": "1px solid #e5e7eb",
+                    "borderRadius": "4px", "userSelect": "none",
+                    "transition": "opacity 0.15s",
+                },
+            )
+        )
+
+    return rows
+
+
 # ── Layout ────────────────────────────────────────────────────────────────────
 
 def layout(state: dict) -> html.Div:
@@ -573,7 +664,8 @@ def layout(state: dict) -> html.Div:
 
     return html.Div([
         header,
-        dcc.Store(id="cp2c-overrides", data={}, storage_type="session"),
+        dcc.Store(id="cp2c-overrides",   data={}, storage_type="session"),
+        dcc.Store(id="cp2c-slide-order", data=[], storage_type="session"),
         dcc.Store(id="cp2c-raw-tile-code", storage_type="memory"),
 
         # Floating Apply button
@@ -640,6 +732,29 @@ def layout(state: dict) -> html.Div:
                 "Set a Slide # on each chart card above. "
                 "Charts sharing the same number appear on the same slide.",
             ], className="text-muted", style={"fontSize": "0.85rem"}),
+
+            html.Hr(className="my-2"),
+            html.H6(
+                [html.I(className="bi bi-sort-numeric-down me-1"), "Slide Order"],
+                className="mb-1",
+            ),
+            html.P(
+                "Drag rows to reorder slides, then click Confirm Order. "
+                "The confirmed order is used when generating the PPT.",
+                className="text-muted mb-2",
+                style={"fontSize": "0.82rem"},
+            ),
+            html.Div(id="cp2c-slide-rows", className="mb-2"),
+            dbc.Button(
+                [html.I(className="bi bi-check2-circle me-1"), "Confirm Order"],
+                id="cp2c-confirm-order-btn",
+                color="secondary", outline=True, size="sm",
+                className="mb-3",
+                n_clicks=0,
+                title="Save the current drag-and-drop order for PPT export",
+            ),
+
+            html.Hr(className="my-2"),
             dbc.Button(
                 [html.I(className="bi bi-file-earmark-ppt me-2"), "Generate PPT"],
                 id="cp2c-export-btn", color="primary",
@@ -694,21 +809,24 @@ def update_overrides(ct_vals, pct_vals, slide_vals, ct_ids, pct_ids, slide_ids, 
 @callback(
     Output("cp2c-charts-grid", "children"),
     Output("cp2c-summary",     "children"),
+    Output("cp2c-slide-rows",  "children"),
     Input("cp2c-apply-btn",  "n_clicks"),
-    State("cp2c-types",     "value"),
-    State("cp2c-search",    "value"),
-    State("cp2c-cols",      "value"),
-    State("cp2c-breakout",  "value"),
-    State("cp2c-overrides", "data"),
-    State("app-state",      "data"),
+    State("cp2c-types",        "value"),
+    State("cp2c-search",       "value"),
+    State("cp2c-cols",         "value"),
+    State("cp2c-breakout",     "value"),
+    State("cp2c-overrides",    "data"),
+    State("cp2c-slide-order",  "data"),
+    State("app-state",         "data"),
 )
-def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col, overrides, state):
+def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col,
+                  overrides, slide_order, state):
     df            = _get_df(state or {})
     codebook      = _get_codebook(df)
     qnr_questions = server_store.get_val("qnr_questions") or []
 
     if not codebook or df is None:
-        return dbc.Alert("Complete Variable Mapping first.", color="info"), ""
+        return dbc.Alert("Complete Variable Mapping first.", color="info"), "", []
 
     cols_per_row = int(cols_per_row or 2)
     type_filter  = type_filter or []
@@ -731,7 +849,7 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col, ove
         summary += f"  |  Breakout: {breakout_col}"
 
     if not visible:
-        return dbc.Alert("No variables match the current filters.", color="info"), summary
+        return dbc.Alert("No variables match the current filters.", color="info"), summary, []
 
     breakout_series = (df[breakout_col]
                        if breakout_col and breakout_col != "None"
@@ -866,20 +984,42 @@ def render_charts(n_clicks, type_filter, search, cols_per_row, breakout_col, ove
     if row_cols:
         chart_rows.append(dbc.Row(row_cols))
 
-    return html.Div(chart_rows), summary
+    slide_rows = _build_slide_rows(visible, overrides or {}, slide_order or [])
+    return html.Div(chart_rows), summary, slide_rows
+
+
+# Clientside: read DOM order of .slide-order-row elements → persist to store
+clientside_callback(
+    """
+    function(n_clicks) {
+        if (!n_clicks) return window.dash_clientside.no_update;
+        var rows = document.querySelectorAll('#cp2c-slide-rows .slide-order-row');
+        var order = [];
+        rows.forEach(function(r) {
+            var n = parseInt(r.getAttribute('data-slide-num'));
+            if (!isNaN(n)) order.push(n);
+        });
+        return order.length > 0 ? order : window.dash_clientside.no_update;
+    }
+    """,
+    Output("cp2c-slide-order", "data"),
+    Input("cp2c-confirm-order-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
 
 
 @callback(
     Output("cp2c-download",      "data"),
     Output("cp2c-export-status", "children"),
     Input("cp2c-export-btn",     "n_clicks"),
-    State("cp2c-types",    "value"),
-    State("cp2c-search",   "value"),
-    State("cp2c-overrides","data"),
-    State("app-state",     "data"),
+    State("cp2c-types",          "value"),
+    State("cp2c-search",         "value"),
+    State("cp2c-overrides",      "data"),
+    State("cp2c-slide-order",    "data"),
+    State("app-state",           "data"),
     prevent_initial_call=True,
 )
-def export_ppt(n_clicks, type_filter, search, overrides, state):
+def export_ppt(n_clicks, type_filter, search, overrides, slide_order, state):
     if not n_clicks:
         return no_update, no_update
 
@@ -907,7 +1047,8 @@ def export_ppt(n_clicks, type_filter, search, overrides, state):
         return no_update, dbc.Alert("No charts visible to export.", color="warning")
 
     try:
-        buf = build_pptx(visible, df, overrides, qnr_questions)
+        buf = build_pptx(visible, df, overrides, qnr_questions,
+                         slide_order=slide_order or [])
         return (
             dcc.send_bytes(buf.read(), "charts_portal.pptx"),
             dbc.Alert("PPT ready — downloading…", color="success", duration=3000),

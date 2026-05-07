@@ -482,10 +482,12 @@ def _fix_chart_elem(chart_elem):
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-def build_pptx(visible: list, df, overrides: dict, qnr_questions: list) -> io.BytesIO:
+def build_pptx(visible: list, df, overrides: dict, qnr_questions: list,
+               slide_order: list = None) -> io.BytesIO:
     """
     Build a Presentation with native charts grouped by slide number.
     Tiles without a slide number get one slide each (auto-assigned).
+    slide_order: optional list of slide numbers in the user's preferred display order.
     Returns a seeked BytesIO buffer.
     """
     prs = Presentation()
@@ -503,7 +505,15 @@ def build_pptx(visible: list, df, overrides: dict, qnr_questions: list) -> io.By
             slide_num = i
         slide_groups.setdefault(slide_num, []).append(tile)
 
-    for slide_num in sorted(slide_groups.keys()):
+    # Determine iteration order: honour user's drag-and-drop order when available
+    if slide_order:
+        ordered   = [k for k in slide_order if k in slide_groups]
+        remaining = [k for k in sorted(slide_groups.keys()) if k not in ordered]
+        iter_keys = ordered + remaining
+    else:
+        iter_keys = sorted(slide_groups.keys())
+
+    for slide_num in iter_keys:
         tiles = slide_groups[slide_num]
         slide = prs.slides.add_slide(blank)
         rects = _chart_rects(len(tiles))
