@@ -89,15 +89,25 @@ NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 24
 
 ## Current state (last updated 2026-05-07, session 23)
 
-### Session 23 — Charts Portal: drag-and-drop slide reorder
-- `assets/slide_order_dnd.js`: HTML5 drag-and-drop (document-level delegation) for `.slide-order-row` elements
-- `stage2c_charts.py`: Slide Order panel added to Export card; shows each slide group as a draggable row (drag handle + Slide # + chart code chips)
-- `cp2c-slide-order` (session Store): persists confirmed drag order across page navigation
-- `cp2c-confirm-order-btn`: clientside callback reads DOM row order → saves to `cp2c-slide-order` store
-- `render_charts` callback now has 3 outputs: `cp2c-charts-grid`, `cp2c-summary`, **`cp2c-slide-rows`**
-- `build_pptx()` in `ppt_export.py` accepts `slide_order` list; iterates slides in user-confirmed order instead of numerically
-- Phantom slide numbers in stored order are silently skipped; new slides appended at end
-- Tested with real data: 1,200 rows × 713 cols, 54 questions, 49 codebook tiles — all 4 test cases pass
+### Session 23 — Charts Portal: drag-and-drop card + slide reorder
+
+#### Chart card reordering
+- `assets/chart_card_dnd.js`: HTML5 drag-and-drop for `.cp2c-chart-card` elements inside `#cp2c-cards-container`; uses mid-point x detection to insert before/after target in flex grid
+- Cards rendered as flat flex container (replacing nested `dbc.Row/Col`); DOM order drives visual layout; card width computed from `cols_per_row` slider
+- Each card has `draggable="true"`, `data-code` attr, and a `⠿` drag handle in the header
+- **Save Order** button (top-right, next to Apply): clientside callback reads DOM `.cp2c-chart-card` order → saves list of codes to `cp2c-card-order` session store
+- `render_charts` sorts `visible` tiles by stored card order before rendering; new/unordered tiles appended at end
+
+#### Slide reorder
+- `assets/slide_order_dnd.js`: HTML5 drag-and-drop for `.slide-order-row` elements in the Export card
+- Slide Order panel shows each slide group as a draggable row (drag handle + Slide # + chart code chips)
+- `cp2c-slide-order` (session Store): persists confirmed slide order
+- **Confirm Order** button: clientside callback reads DOM row order → saves to `cp2c-slide-order` store
+- `build_pptx()` in `ppt_export.py` accepts `slide_order` list; iterates slides in confirmed order; phantom slide numbers silently skipped
+
+#### Other
+- `render_charts` callback: 3 outputs (`cp2c-charts-grid`, `cp2c-summary`, `cp2c-slide-rows`); states include both `cp2c-card-order` and `cp2c-slide-order`
+- Tested with real data: 1,200 rows × 713 cols, 54 questions, 49 codebook tiles
 
 ### Session 22
 - QNR parse accuracy — Strategy 3 cross-validation added to col_mapper.py
