@@ -6,30 +6,30 @@ wb = openpyxl.load_workbook('NN_Design_Tracker.xlsx')
 ws = wb['Session Log']
 
 next_row = ws.max_row + 1
-next_session = 23
+next_session = 24
 
 decision_text = (
-    "Session 2026-04-23 — Fix S10B option truncation + import-options UI. "
-    "col_mapper.py: fixed _overlap_score substring collision where short tokens like "
-    "'p1' matched inside 'p10', 'p11' etc., causing intersection to drop options 10+. "
-    "Changed containment check to word-boundary (set subset) instead of character substring. "
-    "Removed early-exit at score>=1.0 in _best_qnr_match so all options are compared; "
-    "on equal score, prefer the longer/more specific QNR option. "
-    "qnr_parser.py: merge continuation tables split across Word page breaks — when a "
-    "second w:tbl element is encountered for the same question, its options are appended "
-    "rather than silently dropped (had_table guard relaxed). "
-    "Added _cell_is_blue() helper to detect blue-coloured font runs in a table cell. "
-    "In _parse_table_for_options, row 1 col 0 is checked: if it is a short question code "
-    "in blue text it is stored as borrows_options_from; after full-document dedup pass, "
-    "questions with borrows_options_from and no options get the source question's options copied in. "
-    "var_mapping.py: pool row now shows an 'Import from...' dcc.Dropdown listing all other "
-    "question codes; selecting one runs import_options_from_question callback which appends "
-    "source question's options into vm_state['extra_options'][target_code]. "
-    "Textarea '+ Add / paste options' panel wired to server: add_options_to_pool callback "
-    "reads one-per-line text and saves to extra_options. "
-    "Both mechanisms deduplicate and persist across page navigation. "
-    "DEFAULT_VM_STATE updated to include extra_options: {}. "
-    "Pool construction in _render_var_table includes extra_options deduped with q['options']."
+    "Session 2026-05-07 — Charts Portal: drag-and-drop card reordering + slide reordering. "
+    "assets/chart_card_dnd.js: HTML5 drag-and-drop for .cp2c-chart-card elements inside "
+    "#cp2c-cards-container; uses mid-point x detection to insert before/after target in flex grid. "
+    "assets/slide_order_dnd.js: HTML5 drag-and-drop for .slide-order-row elements in the Export card; "
+    "flashes purple outline on container after drop to hint user to click Confirm. "
+    "stage2c_charts.py: cards now rendered as flat flex container (replacing nested dbc.Row/Col); "
+    "card width computed dynamically from cols_per_row slider as calc(N% - Xpx); "
+    "each card wrapper has draggable=true, data-code attr, and a braille-dot drag handle in the header. "
+    "Save Order button (top-right, next to Apply): clientside callback reads DOM .cp2c-chart-card order "
+    "and saves list of codes to cp2c-card-order session store. "
+    "render_charts sorts visible tiles by stored card order before rendering; unordered tiles appended at end. "
+    "Slide Order panel in Export card: each slide group shown as a draggable row with chart code chips. "
+    "Confirm Order button: clientside callback reads DOM .slide-order-row order and saves to cp2c-slide-order. "
+    "build_pptx() in ppt_export.py now accepts slide_order list; iterates slides in confirmed order; "
+    "phantom slide numbers silently skipped; new slides appended at end. "
+    "Card height fix: container uses align-items:stretch; card wrappers are display:flex + flex-direction:column; "
+    "dbc.Card has height:100% so all cards in a row stretch to match the tallest — prevents size "
+    "inconsistency after drag-and-drop reorder. Removed duplicate margin-bottom (gap handles row spacing). "
+    "render_charts callback: 3 outputs (cp2c-charts-grid, cp2c-summary, cp2c-slide-rows); "
+    "states include both cp2c-card-order and cp2c-slide-order. "
+    "Tested with real data: 1,200 rows x 713 cols, 54 questions, 49 codebook tiles — all tests passed."
 )
 
 open_questions = (
@@ -37,8 +37,7 @@ open_questions = (
     "Test full pipeline end-to-end with Raw data 2.xlsx + Survey 2.docx. "
     "Re-zip and upload to Google Drive. "
     "Stages 1-9 inherited from Streamlit rewrite, not yet re-tested end-to-end. "
-    "borrows_options_from auto-detection from blue PN notes not yet verified against "
-    "real survey docx — test with Survey 2.docx to confirm blue-text detection works."
+    "S10B root cause (page-break split table vs vMerge skip on rows 10-20) still open."
 )
 
 
@@ -57,8 +56,8 @@ def copy_row_style(src_row_num, dst_row_num):
 copy_row_style(ws.max_row, next_row)
 
 ws.cell(row=next_row, column=1).value = next_session
-ws.cell(row=next_row, column=2).value = '2026-04-23 S23'
-ws.cell(row=next_row, column=3).value = 'Fix S10B option truncation + import-options UI — overlap score fix, page-break table merge, borrowed-options auto-detect, Import from / Add to pool callbacks'
+ws.cell(row=next_row, column=2).value = '2026-05-07 S24'
+ws.cell(row=next_row, column=3).value = 'Charts Portal: drag-and-drop card + slide reorder, card height fix'
 ws.cell(row=next_row, column=4).value = decision_text
 ws.cell(row=next_row, column=5).value = open_questions
 
