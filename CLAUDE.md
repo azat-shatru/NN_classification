@@ -12,7 +12,7 @@ Output: trained PyTorch neural network for multiclass classification.
 
 ## How to run
 ```bash
-.venv/Scripts/python dash_app/app.py
+venv/Scripts/python.exe dash_app/app.py
 # → http://127.0.0.1:8050
 ```
 
@@ -37,9 +37,17 @@ dash_app/
   utils/
     qnr_parser.py     # Parses docx/pdf/xlsx/txt questionnaire → list of question dicts
     col_mapper.py     # Groups dataset columns by prefix, suggests var types
-  assets/style.css    # All custom CSS
+    stage2c_charts.py   # Charts Portal (Stage 2.6) — interactive charts + PPT export
+  utils/
+    qnr_parser.py     # Parses docx/pdf/xlsx/txt questionnaire → list of question dicts
+    col_mapper.py     # Groups dataset columns by prefix, suggests var types
+    ppt_export.py     # Builds native OOXML PowerPoint charts from codebook tiles
+  assets/
+    style.css         # All custom CSS
+    dragdrop.js       # Chip drag-and-drop for Variable Mapping
+    slide_order_dnd.js  # Slide row drag-and-drop for Charts Portal export
 update_log.py         # Run this after every session to log changes to NN_Design_Tracker.xlsx
-NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 20
+NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 24
 ```
 
 ## Architecture decisions
@@ -79,13 +87,27 @@ NN_Design_Tracker.xlsx  # Session log (Sheet: "Session Log"), next session = 20
 - Sheet name lookup is case-insensitive
 - `_mapping_source` field on enriched questions: `intersection` | `qnr_only` | `col_e_only` | `grid_expansion` | `n/a`
 
-## Current state (last updated 2026-04-23, session 22)
-- Session 22: QNR parse accuracy — Strategy 3 cross-validation added to col_mapper.py
+## Current state (last updated 2026-05-07, session 23)
+
+### Session 23 — Charts Portal: drag-and-drop slide reorder
+- `assets/slide_order_dnd.js`: HTML5 drag-and-drop (document-level delegation) for `.slide-order-row` elements
+- `stage2c_charts.py`: Slide Order panel added to Export card; shows each slide group as a draggable row (drag handle + Slide # + chart code chips)
+- `cp2c-slide-order` (session Store): persists confirmed drag order across page navigation
+- `cp2c-confirm-order-btn`: clientside callback reads DOM row order → saves to `cp2c-slide-order` store
+- `render_charts` callback now has 3 outputs: `cp2c-charts-grid`, `cp2c-summary`, **`cp2c-slide-rows`**
+- `build_pptx()` in `ppt_export.py` accepts `slide_order` list; iterates slides in user-confirmed order instead of numerically
+- Phantom slide numbers in stored order are silently skipped; new slides appended at end
+- Tested with real data: 1,200 rows × 713 cols, 54 questions, 49 codebook tiles — all 4 test cases pass
+
+### Session 22
+- QNR parse accuracy — Strategy 3 cross-validation added to col_mapper.py
 - `merge_qnr_with_metadata()` now cross-validates option count vs dataset column count; warns when QNR options < 70% of implied count
 - Warning format: `'{CODE}: QNR has {n} option(s) but {m} dataset column(s) suggest ~{expected} — QNR parsing may be incomplete'`
 - var_mapping.py: red `⚠ incomplete parse` dbc.Badge on accordion card header + inline alert in body for any question with parse warnings
 - Survey 2.docx and Raw data 2.xlsx updated by user
-- Session 21: Var Mapping option assignment rewritten: intersection/QNR-only rule, grid expansion, zero-unassigned safety pass
+
+### Session 21
+- Var Mapping option assignment rewritten: intersection/QNR-only rule, grid expansion, zero-unassigned safety pass
 - parse_excel_metadata reads col B (var_types) in addition to col E (var_labels); case-insensitive sheet lookup
 - refresh_mapping calls merge_qnr_with_metadata when both QNR and Excel metadata loaded
 - Type dropdown prefers col-B type over heuristic inference
